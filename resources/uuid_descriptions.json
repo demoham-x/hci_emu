@@ -1,0 +1,26 @@
+{
+  "services": {
+    "4d87b1ea-528b-4798-b002-e2e1442a2e86" : "HONDA SAB 2.0 - Vehicle Info service",
+    "e95a363a-5a67-437a-88a4-153dbe498bf1" : "HONDA SAB 2.0 - HID Command Request service",
+    "8536e103-6771-4d4b-9702-287cb5e1340f" : "HONDA SAB 2.0 - Data Communication Service"
+  },
+  "characteristics": {
+    "ddd14e97-636d-4338-a798-94cf7ce13667" : "HONDA SAB 2.0 - Vehicle Info service - Switch Type",
+    "3f033888-0211-472e-9405-6525d4e4ddc7" : "HONDA SAB 2.0 - Vehicle Info service - Category ID",
+    "55f7910b-8cda-458b-9b54-8a7da8cd79d4" : "HONDA SAB 2.0 - Vehicle Info service - Destination ID",
+    "6bb4a2d7-11d3-44d6-b013-14984f7be75e" : "HONDA SAB 2.0 - Vehicle Info service - Language Type",
+    "abc7f194-25c6-4892-b323-c6b143b0ee88" : "HONDA SAB 2.0 - Vehicle Info service - Series code",
+    "26c9def5-1d19-425a-a81b-d419b9093ff8" : "HONDA SAB 2.0 - Vehicle Info service - Meter Type",
+    "8783d6b1-fa43-45fd-8e63-b1db671e9ca0" : "HONDA SAB 2.0 - Vehicle Info service - Meter ECUID",
+    "0e7c7d08-0c01-4b28-a181-454a3d630194" : "HONDA SAB 2.0 - Vehicle Info service - Meter CAN Table Version",
+    "d40f7d79-5c88-44c3-b92a-cf6f9b0ad232" : "HONDA SAB 2.0 - Vehicle Info service - Supplier Number",
+    "75a64d9f-048a-4a38-88bc-6059558f93db" : "HONDA SAB 2.0 - Vehicle Info service - Vehicle Identification No",
+    "96f6a339-60dc-4983-9789-8da520b7b5f7" : "HONDA SAB 2.0 - HID Command Request service - HID event Request",
+    "6c060578-d1d9-460a-b86f-eb97f01b2227" : "HONDA SAB 2.0 - Data Communication Service - Function NTF Source",
+    "d2e23443-f1ad-4293-a70b-a9fd163f7b00" : "HONDA SAB 2.0 - Data Communication Service - Control Point",
+    "6a0dea86-fea4-4c15-a22b-d9d9e19e67ef" : "HONDA SAB 2.0 - Data Communication Service - Meter Status NTF Source"
+  },
+  "descriptors": {
+    
+  }
+}
