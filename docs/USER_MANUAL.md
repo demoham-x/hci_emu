@@ -10,9 +10,10 @@
 2. [Installation](#installation)
 3. [Basic Operations](#basic-operations)
 4. [Advanced Features](#advanced-features)
-5. [HCI Packet Capture](#hci-packet-capture)
-6. [Troubleshooting](#troubleshooting)
-7. [FAQ](#faq)
+5. [Legacy LE Mode](#legacy-le-mode)
+6. [HCI Packet Capture](#hci-packet-capture)
+7. [Troubleshooting](#troubleshooting)
+8. [FAQ](#faq)
 
 ---
 
@@ -389,6 +390,79 @@ timestamp,handle,value_hex,value_ascii
 ```
 
 **Stop**: Option 18
+
+---
+
+## Legacy LE Mode
+
+Some Bluetooth controllers, or setups where you need to sniff with a legacy
+analyser, require that only the original non-extended LE HCI commands are used
+for scanning, advertising, and connection initiation.
+
+By default Bumble uses **extended** commands when the controller reports it
+supports them (Bluetooth 5.0+).  The **Legacy LE mode** flag tells the
+framework to strip those capability bits so that Bumble always sends the
+classic opcodes:
+
+| Operation | Legacy opcode(s) used |
+|-----------|----------------------|
+| Scan parameters | `LE_Set_Scan_Parameters` (0x200B) |
+| Scan enable/disable | `LE_Set_Scan_Enable` (0x200C) |
+| Create connection | `LE_Create_Connection` (0x200D) |
+| Advertising parameters | `LE_Set_Advertising_Parameters` (0x2006) |
+| Advertising data | `LE_Set_Advertising_Data` (0x2008) |
+| Scan response data | `LE_Set_Scan_Response_Data` (0x2009) |
+| Advertising enable | `LE_Set_Advertise_Enable` (0x200A) |
+
+### Enabling Legacy LE Mode
+
+**Option 1 – Command-line flag:**
+
+```bash
+python src/main.py --legacy-le
+```
+
+**Option 2 – Environment variable:**
+
+```bash
+# Linux / macOS
+USE_LEGACY_LE=1 python src/main.py
+
+# Windows PowerShell
+$env:USE_LEGACY_LE=1; python src/main.py
+
+# Windows Command Prompt
+set USE_LEGACY_LE=1 && python src/main.py
+```
+
+When active the main menu shows a reminder line:
+
+```
+E. Debug Logging (NONE)
+   [Legacy LE mode: ON  -- using legacy scan/adv/connect opcodes]
+1. Scan for BLE Devices
+```
+
+and a confirmation is printed once Bluetooth powers on:
+
+```
+[Legacy LE] ✓ Legacy-only LE procedures enforced (opcodes 0x200B/C, 0x200D)
+```
+
+### Verifying with HCI Snoop
+
+1. Enable HCI Snoop (Option D) to record a `logs/hci_capture.log` file.
+2. Start scanning.
+3. Open `hci_capture.log` in Wireshark or the Ellisys Analyzer.
+4. Filter for opcode `0x200b` — you should see `LE Set Scan Parameters`
+   packets rather than the extended equivalent (`0x2041`).
+
+### When to use Legacy LE Mode
+
+- The target peripheral does not support extended advertising.
+- A hardware HCI sniffer only decodes legacy LE packets.
+- Debugging interoperability with Bluetooth 4.x-only equipment.
+- Reproducing issues observed on legacy-only stacks.
 
 ---
 

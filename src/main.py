@@ -50,7 +50,7 @@ else:
 sys.path.insert(0, os.path.dirname(__file__))
 from scanner import BLEScanner
 from connector import BLEConnector
-from utils import print_section, format_address
+from utils import print_section, format_address, apply_legacy_le_mode
 from bumble.keys import JsonKeyStore
 from hci_snooper import HCISnooper, BumbleHCITransportWrapper
 
@@ -58,8 +58,9 @@ from hci_snooper import HCISnooper, BumbleHCITransportWrapper
 class BLETestingMenu:
     """Interactive BLE Testing Menu"""
     
-    def __init__(self, transport_spec: str = "tcp-client:127.0.0.1:9001"):
+    def __init__(self, transport_spec: str = "tcp-client:127.0.0.1:9001", legacy_le: bool = False):
         self.transport_spec = transport_spec
+        self.legacy_le = legacy_le
         self.scanner = BLEScanner(transport_spec)
         self.connector = BLEConnector(transport_spec)
         self.discovered_devices = {}
@@ -93,6 +94,8 @@ class BLETestingMenu:
         print("C. Set Device Filters")
         print(f"D. HCI Snoop Logging (OFF)" if not self.snoop_enabled else f"D. HCI Snoop Logging (ON)")
         print(f"E. Debug Logging ({self.debug_mode.upper()})")
+        if self.legacy_le:
+            print("   [Legacy LE mode: ON  -- using legacy scan/adv/connect opcodes]")
         print("1. Scan for BLE Devices")
         print("2. Connect to Device")
         print("3. Discover GATT Services")
@@ -676,7 +679,11 @@ class BLETestingMenu:
         self.connector.setup_pairing_on_device(self._scan_device)
         
         await self._scan_device.power_on()
-        
+
+        if self.legacy_le:
+            apply_legacy_le_mode(self._scan_device)
+            print("[Legacy LE] ✓ Legacy-only LE procedures enforced (opcodes 0x200B/C/D, 0x2006/8/9/A)")
+
         self._scan_ready = True
         return self._scan_device
 
@@ -798,7 +805,11 @@ class BLETestingMenu:
             device.on('advertisement', on_advertisement)
             
             # Start scanning
-            await device.start_scanning(active=active_scan, filter_duplicates=filter_duplicates)
+            await device.start_scanning(
+                legacy=self.legacy_le,
+                active=active_scan,
+                filter_duplicates=filter_duplicates,
+            )
             
             # Scan for specified duration
             while asyncio.get_event_loop().time() - start_time < duration:
@@ -1793,7 +1804,7 @@ class BLETestingMenu:
 async def main():
     """Main entry point"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Bumble BLE Testing Framework")
     parser.add_argument(
         "--transport",
@@ -1805,13 +1816,23 @@ async def main():
         action="store_true",
         help="Enable verbose logging",
     )
-    
+    parser.add_argument(
+        "--legacy-le",
+        action="store_true",
+        default=os.environ.get("USE_LEGACY_LE", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Force legacy (non-extended) LE procedures for scanning, advertising, "
+            "and connection setup (opcodes 0x200B/C/D, 0x2006/8/9/A). "
+            "Can also be enabled via the USE_LEGACY_LE=1 environment variable."
+        ),
+    )
+
     args = parser.parse_args()
-    
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
-    menu = BLETestingMenu(args.transport)
+
+    menu = BLETestingMenu(args.transport, legacy_le=args.legacy_le)
     await menu.run()
 
 
