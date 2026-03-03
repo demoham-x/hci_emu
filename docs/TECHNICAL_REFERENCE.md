@@ -125,57 +125,6 @@ Application Layer
 | LE_Read_Remote_Features | 0x2016 | Read peer features |
 | LE_Start_Encryption | 0x2019 | Begin encryption |
 
-> **Note:** By default Bumble uses **extended** LE commands when the controller
-> supports them (opcodes 0x2041 / 0x2042 for scanning, 0x2036–0x2039 for
-> advertising, 0x2043 for connection initiation).  When **Legacy LE mode** is
-> enabled (see [Legacy LE Mode](#legacy-le-mode) below) the opcodes in the table
-> above are always issued instead.
-
-### Legacy LE Mode
-
-Some controllers or analyser setups require the legacy (non-extended) LE HCI
-commands instead of the extended ones defined in Bluetooth 5.0+.
-
-#### How it works
-
-After `device.power_on()` the `apply_legacy_le_mode()` helper in
-`src/utils.py` clears two capability bits that Bumble inspects before choosing
-which command variant to send:
-
-| Capability cleared | Effect |
-|--------------------|--------|
-| `LeFeatureMask.LE_EXTENDED_ADVERTISING` | `start_scanning` and `start_advertising` fall back to legacy opcodes 0x200B/C and 0x2006/8/9/A |
-| `HCI_LE_EXTENDED_CREATE_CONNECTION` supported-command bit | `connect_le` falls back to legacy opcode 0x200D |
-
-`start_scanning` is additionally called with `legacy=True`, which is Bumble's
-own short-circuit path that skips the extended scan path entirely.
-
-#### Enabling legacy LE mode
-
-**Via CLI flag:**
-
-```bash
-python src/main.py --legacy-le
-```
-
-**Via environment variable:**
-
-```bash
-USE_LEGACY_LE=1 python src/main.py
-```
-
-When active, the main menu displays:
-
-```
-   [Legacy LE mode: ON  -- using legacy scan/adv/connect opcodes]
-```
-
-and a confirmation line is printed once Bluetooth powers on:
-
-```
-[Legacy LE] ✓ Legacy-only LE procedures enforced (opcodes 0x200B/C, 0x200D)
-```
-
 ### HCI Events Received
 
 | Event | Code | Description |
