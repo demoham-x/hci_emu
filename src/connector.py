@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class GenericPairingDelegate:
     """Generic SMP pairing handler that works with any BLE peripheral"""
     
-    def __init__(self, interactive: bool = True):
+    def __init__(self, interactive: bool = True, io_capability=None):
         """
         Initialize pairing delegate
         
@@ -107,9 +107,13 @@ class GenericPairingDelegate:
                 print(f"[PAIRING DELEGATE] PIN entered: {pin_str if pin_str else '(empty)'}")
                 return pin_str if pin_str else None
         
-        # Create instance with proper IO capabilities
+        # Create instance with selected IO capability (or class default if not provided).
         self.delegate_instance = _PairingDelegateImpl(
-            io_capability=BumblePairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_KEYBOARD_INPUT,
+            io_capability=(
+                io_capability
+                if io_capability is not None
+                else BumblePairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_KEYBOARD_INPUT
+            ),
             local_initiator_key_distribution=(
                 BumblePairingDelegate.KeyDistribution.DISTRIBUTE_ENCRYPTION_KEY |
                 BumblePairingDelegate.KeyDistribution.DISTRIBUTE_IDENTITY_KEY |
@@ -141,6 +145,20 @@ class BLEConnector:
         self.service_details = []
         self.interactive = interactive
         self.pairing_delegate = None
+        self._smp_config_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "configs", "smp_config.json")
+        )
+        
+        # SMP Configuration Parameters
+        self.smp_config = {
+            'io_capability': 'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT',  # Default IO capability
+            'mitm_required': True,  # Man-in-the-Middle protection
+            'le_secure_connections': True,  # LE Secure Connections (SC)
+            'min_enc_key_size': 7,  # Minimum encryption key size
+            'max_enc_key_size': 16,  # Maximum encryption key size (max is 16)
+            'bonding_enabled': True,  # Bonding/key storage
+        }
+        self._load_smp_config()
         
         # Burst data operations
         self._burst_write_task = None
@@ -154,7 +172,113 @@ class BLEConnector:
         self._csv_file = None
         self._csv_writer = None
         self._csv_filename = None
+
+    def _load_smp_config(self):
+        """Load SMP configuration from disk; keep defaults on any error."""
+        if not os.path.exists(self._smp_config_path):
+            return
+
+        try:
+            with open(self._smp_config_path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+
+            if not isinstance(loaded, dict):
+                logger.warning("[SMP] Ignoring invalid config file format (expected object)")
+                return
+
+            merged = self.smp_config.copy()
+            merged.update(loaded)
+            self.smp_config = self._normalize_smp_config(merged)
+            logger.info(f"[SMP] Loaded configuration from {self._smp_config_path}")
+        except Exception as e:
+            logger.warning(f"[SMP] Could not load config from {self._smp_config_path}: {e}")
+
+    def _save_smp_config(self):
+        """Persist current SMP configuration to disk."""
+        try:
+            os.makedirs(os.path.dirname(self._smp_config_path), exist_ok=True)
+            with open(self._smp_config_path, "w", encoding="utf-8") as handle:
+                json.dump(self.smp_config, handle, indent=2)
+                handle.write("\n")
+            logger.info(f"[SMP] Saved configuration to {self._smp_config_path}")
+        except Exception as e:
+            logger.warning(f"[SMP] Failed to save config to {self._smp_config_path}: {e}")
+
+    def _normalize_smp_config(self, config: dict) -> dict:
+        """Normalize and validate SMP settings loaded from disk."""
+        normalized = self.smp_config.copy()
+
+        valid_io = {
+            'DISPLAY_ONLY',
+            'KEYBOARD_ONLY',
+            'NO_INPUT_NO_OUTPUT',
+            'KEYBOARD_DISPLAY',
+            'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT',
+        }
+
+        io_value = config.get('io_capability')
+        if io_value in valid_io:
+            normalized['io_capability'] = io_value
+
+        normalized['mitm_required'] = bool(config.get('mitm_required', normalized['mitm_required']))
+        normalized['le_secure_connections'] = bool(
+            config.get('le_secure_connections', normalized['le_secure_connections'])
+        )
+        normalized['bonding_enabled'] = bool(config.get('bonding_enabled', normalized['bonding_enabled']))
+
+        try:
+            min_size = int(config.get('min_enc_key_size', normalized['min_enc_key_size']))
+            max_size = int(config.get('max_enc_key_size', normalized['max_enc_key_size']))
+            if 7 <= min_size <= 16 and 7 <= max_size <= 16 and min_size <= max_size:
+                normalized['min_enc_key_size'] = min_size
+                normalized['max_enc_key_size'] = max_size
+        except (TypeError, ValueError):
+            pass
+
+        return normalized
     
+    def _resolve_io_capability(self, option_name: str):
+        """Resolve configured IO capability to Bumble enum across library versions."""
+        from bumble.pairing import PairingDelegate
+
+        io_cls = PairingDelegate.IoCapability
+
+        # Different Bumble versions expose slightly different enum member names.
+        candidate_names = {
+            'DISPLAY_ONLY': [
+                'DISPLAY_ONLY',
+                'DISPLAY_OUTPUT_ONLY',
+            ],
+            'KEYBOARD_ONLY': [
+                'KEYBOARD_ONLY',
+                'KEYBOARD_INPUT_ONLY',
+            ],
+            'NO_INPUT_NO_OUTPUT': [
+                'NO_INPUT_NO_OUTPUT',
+                'NO_OUTPUT_NO_INPUT',
+            ],
+            'KEYBOARD_DISPLAY': [
+                'KEYBOARD_DISPLAY',
+                'DISPLAY_OUTPUT_AND_YES_NO_INPUT',
+            ],
+            'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT': [
+                'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT',
+                'KEYBOARD_DISPLAY',
+                'DISPLAY_OUTPUT_AND_YES_NO_INPUT',
+            ],
+        }
+
+        requested = candidate_names.get(option_name, [])
+        fallback = candidate_names['DISPLAY_OUTPUT_AND_KEYBOARD_INPUT']
+
+        for name in requested + fallback:
+            if hasattr(io_cls, name):
+                return getattr(io_cls, name)
+
+        raise RuntimeError(
+            f"No compatible PairingDelegate.IoCapability found in Bumble for option '{option_name}'"
+        )
+
     def setup_pairing_on_device(self, device):
         """
         Set up generic SMP pairing on a device
@@ -162,13 +286,18 @@ class BLEConnector:
         Args:
             device: Bumble Device instance
         """
-        from bumble.pairing import PairingConfig, PairingDelegate
+        from bumble.pairing import PairingConfig
         from bumble import smp
         
         logger.info("[PAIRING SETUP] Starting pairing configuration")
         
-        # Create pairing delegate wrapper
-        self.pairing_delegate = GenericPairingDelegate(interactive=self.interactive)
+        resolved_io_capability = self._resolve_io_capability(self.smp_config['io_capability'])
+
+        # Create pairing delegate wrapper with configured IO capability
+        self.pairing_delegate = GenericPairingDelegate(
+            interactive=self.interactive,
+            io_capability=resolved_io_capability,
+        )
         delegate = self.pairing_delegate.get_delegate()
         
         logger.info(f"[PAIRING SETUP] Created delegate: {delegate}")
@@ -177,9 +306,9 @@ class BLEConnector:
         def pairing_config_factory(connection):
             logger.info(f"[PAIRING SETUP] pairing_config_factory called for connection {connection}")
             config = PairingConfig(
-                sc=True,  # Secure Connections (LE SC)
-                mitm=True,  # Man-in-the-Middle protection
-                bonding=True,  # Store keys for future connections
+                sc=self.smp_config['le_secure_connections'],  # Secure Connections (LE SC)
+                mitm=self.smp_config['mitm_required'],  # Man-in-the-Middle protection
+                bonding=self.smp_config['bonding_enabled'],  # Store keys for future connections
                 delegate=delegate,
                 identity_address_type=PairingConfig.AddressType.RANDOM
             )
@@ -189,6 +318,75 @@ class BLEConnector:
         device.pairing_config_factory = pairing_config_factory
         
         logger.info("[PAIRING SETUP] Generic SMP pairing factory configured successfully")
+        logger.info(f"[PAIRING SETUP] Config: SC={self.smp_config['le_secure_connections']}, "
+                   f"MITM={self.smp_config['mitm_required']}, "
+                   f"Bonding={self.smp_config['bonding_enabled']}, "
+                   f"IO={self.smp_config['io_capability']}")
+
+    def get_smp_config(self):
+        """Get current SMP configuration"""
+        return self.smp_config.copy()
+    
+    def set_smp_io_capability(self, io_capability: str) -> bool:
+        """Set SMP IO capability
+        
+        Args:
+            io_capability: One of 'DISPLAY_ONLY', 'KEYBOARD_ONLY', 'NO_INPUT_NO_OUTPUT', 
+                          'KEYBOARD_DISPLAY', 'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT'
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        valid_options = {
+            'DISPLAY_ONLY',
+            'KEYBOARD_ONLY', 
+            'NO_INPUT_NO_OUTPUT',
+            'KEYBOARD_DISPLAY',
+            'DISPLAY_OUTPUT_AND_KEYBOARD_INPUT'
+        }
+        if io_capability in valid_options:
+            self.smp_config['io_capability'] = io_capability
+            logger.info(f"[SMP] IO Capability set to: {io_capability}")
+            self._save_smp_config()
+            return True
+        return False
+    
+    def set_smp_mitm_required(self, required: bool):
+        """Set MITM protection requirement"""
+        self.smp_config['mitm_required'] = required
+        logger.info(f"[SMP] MITM Required: {required}")
+        self._save_smp_config()
+    
+    def set_smp_secure_connections(self, enabled: bool):
+        """Set LE Secure Connections enable/disable"""
+        self.smp_config['le_secure_connections'] = enabled
+        logger.info(f"[SMP] LE Secure Connections: {enabled}")
+        self._save_smp_config()
+    
+    def set_smp_encryption_key_size(self, min_size: int, max_size: int) -> bool:
+        """Set encryption key size range
+        
+        Args:
+            min_size: Minimum key size (7-16)
+            max_size: Maximum key size (7-16)
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        if not (7 <= min_size <= 16 and 7 <= max_size <= 16 and min_size <= max_size):
+            return False
+        self.smp_config['min_enc_key_size'] = min_size
+        self.smp_config['max_enc_key_size'] = max_size
+        logger.info(f"[SMP] Encryption Key Size: {min_size}-{max_size}")
+        self._save_smp_config()
+        return True
+    
+    def set_smp_bonding_enabled(self, enabled: bool):
+        """Set bonding enable/disable"""
+        self.smp_config['bonding_enabled'] = enabled
+        logger.info(f"[SMP] Bonding Enabled: {enabled}")
+        self._save_smp_config()
+
     
     async def connect_device(self, device_address: str) -> bool:
         """

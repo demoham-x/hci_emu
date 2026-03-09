@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Bumble BLE Testing - Interactive Menu Interface
+Bumble BLE Testing - Application logic layer.
+"""
+"""
+~~~~NOT USED~~~~
+
+This module needs to be developed for wrapper to bumble to be used for scripts and interactive menu.
+The idea is to have a single app class that manages the BLE operations, state, and user interactions,
+while the main script can be a simple entry point that creates the app instance and runs the menu loop.
 """
 
 import asyncio
@@ -55,8 +62,8 @@ from bumble.keys import JsonKeyStore
 from hci_snooper import HCISnooper, BumbleHCITransportWrapper
 
 
-class BLETestingMenu:
-    """Interactive BLE Testing Menu"""
+class BLETestingApp:
+    """Application layer containing BLE operation logic."""
     
     def __init__(self, transport_spec: str = "tcp-client:127.0.0.1:9001"):
         self.transport_spec = transport_spec
@@ -84,46 +91,70 @@ class BLETestingMenu:
         self.ellisys_port = 24352
         self.btsnoop_filename = "logs/hci_capture.log"  # .log or .btsnoop format
         self.ellisys_stream = "primary"  # primary, secondary, or tertiary
+
+    async def connect(self, address: str, timeout: float = 30.0, auto_pair_if_unbonded: bool = True):
+        """Reusable connect wrapper for both scripts and menu UI."""
+        from bumble.hci import Address
+
+        address = format_address(address)
+        print(f"\nConnecting to {address}...")
+        print("(This may take a few seconds... press Ctrl+C to cancel)\n")
+
+        try:
+            if self._scan_device is None:
+                print("✗ Device not initialized. Run Bluetooth On first.\n")
+                await self._get_scan_device()
+
+            if getattr(self._scan_device, "scanning", False):
+                await self._scan_device.stop_scanning()
+                await asyncio.sleep(1)
+
+            self._suppress_adv_printing = True
+            self.connector.connected_device = await asyncio.wait_for(
+                self._scan_device.connect(Address(address)),
+                timeout=timeout,
+            )
+            self._suppress_adv_printing = False
+
+            self.connector.device = self._scan_device
+            self.connected = True
+            self.current_device = address
+            print(f"✓ Successfully connected to {address}")
+
+            is_bonded = self.connector.is_device_bonded(address)
+
+            if auto_pair_if_unbonded and not is_bonded:
+                print("\nInitiating pairing (peer requested security)...\n")
+                try:
+                    await asyncio.wait_for(
+                        self._scan_device.pair(self.connector.connected_device),
+                        timeout=30.0,
+                    )
+                    print("✓ Pairing completed\n")
+                except Exception as e:
+                    logger.warning(f"Pairing did not complete immediately for {address}: {e}")
+                    print("Note: Pairing may complete in background. Check logs if needed.\n")
+            elif is_bonded:
+                print("✓ Device is already bonded - no pairing needed\n")
+
+            print("Connection ready.\n")
+            print("Next steps:")
+            print("  - Option 9: Encrypt connection (if bonded)")
+            print("  - Option 3: Discover GATT Services")
+            print("  - Option 11: Disconnect\n")
+        except asyncio.TimeoutError:
+            self._suppress_adv_printing = False
+            logger.error(f"Connection timeout to {address}")
+            print("✗ Connection timeout - device not responding after timeout")
+            print("  - Is device powered on and in range?")
+            print("  - Try scanning again (option 1)\n")
+        except Exception as e:
+            self._suppress_adv_printing = False
+            logger.error(f"Connection failed: {e}", exc_info=True)
+            print(f"✗ Connection error: {e}")
+            print("  - Is device powered on and in range?")
+            print("  - Try scanning again (option 1)\n")
         
-    def print_main_menu(self):
-        """Print main menu"""
-        print_section("BUMBLE BLE Testing - Main Menu")
-        print("A. Bluetooth On")
-        print("B. Bluetooth Off")
-        print("C. Set Device Filters")
-        print(f"D. HCI Snoop Logging (OFF)" if not self.snoop_enabled else f"D. HCI Snoop Logging (ON)")
-        print(f"E. Debug Logging ({self.debug_mode.upper()})")
-        print("S. SMP Settings")
-        print("1. Scan for BLE Devices")
-        print("2. Connect to Device")
-        print("3. Discover GATT Services")
-        print("4. Read Characteristic")
-        print("5. Write Characteristic")
-        print("6. Write Without Response")
-        print("7. Subscribe to Notifications")
-        print("8. Subscribe to Indications")
-        print("9. Pair / Encrypt Connection")
-        print("10. Unpair / Delete Bonding")
-        print("11. Disconnect")
-        print("12. Burst Write (With Response)")
-        print("13. Burst Write (Without Response)")
-        print("14. Stop Burst Write")
-        print("15. Burst Read")
-        print("16. Stop Burst Read")
-        print("17. Start CSV Logging")
-        print("18. Stop CSV Logging")
-        print("0. Exit")
-        
-        if self.filter_name or self.filter_address:
-            print()
-            filter_info = []
-            if self.filter_name:
-                filter_info.append(f"Name: '{self.filter_name}'")
-            if self.filter_address:
-                filter_info.append(f"Address: '{self.filter_address}'")
-            print(f"[Filters Active: {', '.join(filter_info)}]")
-        print()
-    
     def print_scan_menu(self):
         """Print scan menu"""
         print_section("Discovered Devices")
@@ -892,129 +923,6 @@ class BLETestingMenu:
             logger.error(f"Bluetooth off error: {e}")
             print(f"✗ Failed to power off Bluetooth: {e}\n")
     
-    async def menu_connect_device(self):
-        """Connect to device"""
-        print_section("Connect to BLE Device")
-        
-        self.print_scan_menu()
-        
-        if not self.discovered_devices:
-            print("No devices available. Run scan first (option 1)\n")
-            return
-        
-        # Option 1: Select by number
-        choice = input("Enter device number from list (or address manually): ").strip()
-        
-        try:
-            # Try as number first
-            device_idx = int(choice)
-            if 1 <= device_idx <= len(self.discovered_devices):
-                address = list(self.discovered_devices.keys())[device_idx - 1]
-            else:
-                print(f"Invalid number. Enter 1-{len(self.discovered_devices)}\n")
-                return
-        except ValueError:
-            # Assume it's an address
-            address = choice
-        
-        address = format_address(address)
-        
-        # Verify device is ready
-        if self._scan_device is None:
-            print("✗ Device not initialized. Run 'A' (Bluetooth On) first.\n")
-            return
-        
-        # Explicitly stop any active scanning
-        if getattr(self._scan_device, "scanning", False):
-            try:
-                logger.info("Stopping scan before connection")
-                await self._scan_device.stop_scanning()
-                await asyncio.sleep(1)  # Give time for scan to stop
-            except Exception as e:
-                logger.warning(f"Failed to stop scan: {e}")
-                print(f"✗ Warning: Could not stop scan cleanly: {e}\n")
-                return
-        
-        # Use the existing scan device for connection
-        try:
-            from bumble.hci import Address
-            
-            logger.info(f"[MAIN] Connecting to device: {address}")
-            
-            device = self._scan_device
-            target_address = Address(address)
-            
-            print(f"\nConnecting to {address}...")
-            print("(This may take a few seconds... press Ctrl+C to cancel)\n")
-            logger.info(f"[MAIN] Calling device.connect() to {address}")
-            
-            # Use timeout to prevent indefinite hanging
-            try:
-                # Suppress advertisement printing during connection
-                self._suppress_adv_printing = True
-                self.connector.connected_device = await asyncio.wait_for(
-                    device.connect(target_address),
-                    timeout=30.0  # 30 second timeout
-                )
-                self._suppress_adv_printing = False
-            except asyncio.TimeoutError:
-                self._suppress_adv_printing = False
-                print(f"\n✗ Connection timeout - device not responding after 30 seconds")
-                print("  Check HCI bridge logs above for error details")
-                print("  - Is device powered on and in range?")
-                print("  - Try scanning again (option 1)")
-                logger.error(f"Connection timeout to {address}")
-                print()
-                return
-            
-            self.connector.device = device  # Reuse the same device
-            
-            self.connected = True
-            self.current_device = address
-            print(f"✓ Successfully connected to {address}")
-            
-            # Check if device is already bonded
-            is_bonded = self.connector.is_device_bonded(address)
-            
-            if is_bonded:
-                print("✓ Device is already bonded - no pairing needed\n")
-                logger.info("[MAIN] Device already bonded, no pairing required")
-            else:
-                print("\nInitiating pairing (peer requested security)...\n")
-                
-                self.current_connection = self.connector.connected_device
-                
-                # Peer initiated security request, respond with pairing
-                try:
-                    logger.info("[MAIN] Responding to peer security request with pairing")
-                    print("🔐 Responding to peer's security request...\n")
-                    await asyncio.wait_for(
-                        device.pair(self.connector.connected_device),
-                        timeout=30.0
-                    )
-                    print("\n✓ Pairing completed!\n")
-                except asyncio.TimeoutError:
-                    print("\n⏱ Pairing timeout - peer didn't respond in time\n")
-                    logger.warning("[MAIN] Pairing timeout")
-                except Exception as e:
-                    logger.warning(f"[MAIN] Pairing didn't complete immediately: {e}")
-                    print(f"Note: Pairing may complete in background. Check bridge logs.\n")
-            
-            print("Connection ready.\n")
-            print("Next steps:")
-            print("  - Option 9: Encrypt connection (if bonded)")
-            print("  - Option 3: Discover GATT Services")
-            print("  - Option 11: Disconnect\n")
-        except KeyboardInterrupt:
-            self._suppress_adv_printing = False
-            print("\n✗ Connection cancelled\n")
-            logger.info("Connection cancelled by user")
-        except Exception as e:
-            self._suppress_adv_printing = False
-            logger.error(f"Connection failed: {e}", exc_info=True)
-            print(f"✗ Connection error: {e}")
-            print("\nFull traceback above in logs")
-    
     async def menu_discover_services(self):
         """Discover GATT services"""
         if not self.connected:
@@ -1583,17 +1491,14 @@ class BLETestingMenu:
         while True:
             print_section("SMP (Secure Manager Protocol) Settings")
 
+            # Get current config
             config = self.connector.get_smp_config()
 
             print("Current Configuration:")
             print(f"  1. IO Capability: {config['io_capability']}")
             print(f"  2. MITM Required: {'YES' if config['mitm_required'] else 'NO'}")
-            print(
-                f"  3. LE Secure Connections: {'ENABLED' if config['le_secure_connections'] else 'DISABLED'}"
-            )
-            print(
-                f"  4. Encryption Key Size: {config['min_enc_key_size']}-{config['max_enc_key_size']} bytes"
-            )
+            print(f"  3. LE Secure Connections: {'ENABLED' if config['le_secure_connections'] else 'DISABLED'}")
+            print(f"  4. Encryption Key Size: {config['min_enc_key_size']}-{config['max_enc_key_size']} bytes")
             print(f"  5. Bonding: {'ENABLED' if config['bonding_enabled'] else 'DISABLED'}")
             print("  0. Back to Main Menu\n")
 
@@ -1957,35 +1862,3 @@ class BLETestingMenu:
                     logger.error(f"Error: {e}\n")
         finally:
             await self._close_scan_device()
-
-
-async def main():
-    """Main entry point"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Bumble BLE Testing Framework")
-    parser.add_argument(
-        "--transport",
-        default="tcp-client:127.0.0.1:9001",
-        help="HCI transport specification",
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-    
-    args = parser.parse_args()
-    
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    menu = BLETestingMenu(args.transport)
-    await menu.run()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\nExit")

@@ -1,0 +1,8 @@
+{
+  "io_capability": "NO_INPUT_NO_OUTPUT",
+  "mitm_required": false,
+  "le_secure_connections": false,
+  "min_enc_key_size": 7,
+  "max_enc_key_size": 16,
+  "bonding_enabled": true
+}
