@@ -678,6 +678,20 @@ class BLETestingMenu:
         
         await self._scan_device.power_on()
         
+        # Register device-level connection event handlers
+        def on_connection(connection):
+            """Handle successful connection establishment"""
+            logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
+            print(f"\n[CONNECTION] ✓ Established to {connection.peer_address}")
+        
+        def on_connection_failure(error):
+            """Handle connection failure"""
+            logger.error(f"[CONNECTION FAILED] Error: {error}")
+            print(f"\n[CONNECTION FAILED] ✗ {error}")
+        
+        self._scan_device.on('connection', on_connection)
+        self._scan_device.on('connection_failure', on_connection_failure)
+        
         self._scan_ready = True
         return self._scan_device
 
@@ -952,22 +966,51 @@ class BLETestingMenu:
             try:
                 # Suppress advertisement printing during connection
                 self._suppress_adv_printing = True
-                self.connector.connected_device = await asyncio.wait_for(
-                    device.connect(target_address),
-                    timeout=30.0  # 30 second timeout
-                )
+                connect_task = None
+                try:
+                    connect_task = asyncio.create_task(
+                        device.connect(target_address)
+                    )
+                    self.connector.connected_device = await asyncio.wait_for(
+                        connect_task,
+                        timeout=30.0  # 30 second timeout
+                    )
+                except asyncio.TimeoutError:
+                    # Cancel the connection task and HCI command
+                    logger.error(f"Connection timeout to {address}")
+                    if connect_task:
+                        connect_task.cancel()
+                    # Try to cancel pending connection at HCI level
+                    try:
+                        from bumble.hci import HCI_LE_Create_Connection_Cancel_Command
+                        await device.send_command(HCI_LE_Create_Connection_Cancel_Command())
+                        logger.info(f"Sent HCI_LE_Create_Connection_Cancel to {address}")
+                    except Exception as e:
+                        logger.debug(f"Could not cancel HCI connection: {e}")
+                    self._suppress_adv_printing = False
+                    print(f"\n✗ Connection timeout - device not responding after 30 seconds")
+                    print("  Check HCI bridge logs above for error details")
+                    print("  - Is device powered on and in range?")
+                    print("  - Try scanning again (option 1)")
+                    print()
+                    return
                 self._suppress_adv_printing = False
-            except asyncio.TimeoutError:
+            except Exception as e:
                 self._suppress_adv_printing = False
-                print(f"\n✗ Connection timeout - device not responding after 30 seconds")
-                print("  Check HCI bridge logs above for error details")
-                print("  - Is device powered on and in range?")
-                print("  - Try scanning again (option 1)")
-                logger.error(f"Connection timeout to {address}")
-                print()
-                return
+                raise
             
             self.connector.device = device  # Reuse the same device
+            
+            # Register disconnection event handler
+            def on_disconnection(reason):
+                """Handle remote disconnection event"""
+                logger.info(f"[DISCONNECTION] Remote device disconnected, reason: {reason}")
+                print(f"\n[DISCONNECTION] Remote device disconnected (reason: {reason})")
+                self.connected = False
+                self.current_device = None
+                self.connector.connected_device = None
+            
+            self.connector.connected_device.on('disconnection', on_disconnection)
             
             self.connected = True
             self.current_device = address

@@ -110,13 +110,41 @@ class BLETestingApp:
                 await asyncio.sleep(1)
 
             self._suppress_adv_printing = True
-            self.connector.connected_device = await asyncio.wait_for(
-                self._scan_device.connect(Address(address)),
-                timeout=timeout,
-            )
+            connect_task = None
+            try:
+                connect_task = asyncio.create_task(
+                    self._scan_device.connect(Address(address))
+                )
+                self.connector.connected_device = await asyncio.wait_for(
+                    connect_task,
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                if connect_task:
+                    connect_task.cancel()
+                try:
+                    from bumble.hci import HCI_LE_Create_Connection_Cancel_Command
+                    await self._scan_device.send_command(HCI_LE_Create_Connection_Cancel_Command())
+                    logger.info(f"Sent HCI_LE_Create_Connection_Cancel to device")
+                except Exception as e:
+                    logger.debug(f"Could not cancel HCI connection: {e}")
+                self._suppress_adv_printing = False
+                raise
             self._suppress_adv_printing = False
 
             self.connector.device = self._scan_device
+            
+            # Register disconnection event handler
+            def on_disconnection(reason):
+                """Handle remote disconnection event"""
+                logger.info(f"[DISCONNECTION] Remote device disconnected, reason: {reason}")
+                print(f"\n[DISCONNECTION] Remote device disconnected (reason: {reason})")
+                self.connected = False
+                self.current_device = None
+                self.connector.connected_device = None
+            
+            self.connector.connected_device.on('disconnection', on_disconnection)
+            
             self.connected = True
             self.current_device = address
             print(f"✓ Successfully connected to {address}")
@@ -708,6 +736,20 @@ class BLETestingApp:
         self.connector.setup_pairing_on_device(self._scan_device)
         
         await self._scan_device.power_on()
+        
+        # Register device-level connection event handlers
+        def on_connection(connection):
+            """Handle successful connection establishment"""
+            logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
+            print(f"\n[CONNECTION] ✓ Established to {connection.peer_address}")
+        
+        def on_connection_failure(error):
+            """Handle connection failure"""
+            logger.error(f"[CONNECTION FAILED] Error: {error}")
+            print(f"\n[CONNECTION FAILED] ✗ {error}")
+        
+        self._scan_device.on('connection', on_connection)
+        self._scan_device.on('connection_failure', on_connection_failure)
         
         self._scan_ready = True
         return self._scan_device
