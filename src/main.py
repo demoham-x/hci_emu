@@ -72,6 +72,9 @@ class BLETestingMenu:
         self.filter_name = None
         self.filter_address = None
         self._suppress_adv_printing = False  # Flag to suppress adv printing during connection
+        self._ui_config_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "configs", "ui_config.json")
+        )
         
         # Debug logging configuration
         self.debug_mode = "none"  # none, console, file, both
@@ -84,13 +87,84 @@ class BLETestingMenu:
         self.ellisys_port = 24352
         self.btsnoop_filename = "logs/hci_capture.log"  # .log or .btsnoop format
         self.ellisys_stream = "primary"  # primary, secondary, or tertiary
+        self.snoop_console_logging = False
         self._connect_in_progress = False
         self._connect_target_address = None
         self._post_connect_task = None
-        self.auto_pair_encrypt_on_security_request = True
+        self.auto_pair_encrypt_on_security_request = self.connector.get_smp_config().get(
+            "auto_pair_encrypt_on_security_request", True
+        )
         self._security_request_task = None
         self._pairing_task = None
         self._pairing_in_progress = False
+        self._load_ui_config()
+        self._configure_debug_logging(self.debug_mode, persist=False)
+
+    def _load_ui_config(self):
+        """Load UI/runtime configuration from disk."""
+        if not os.path.exists(self._ui_config_path):
+            return
+
+        try:
+            with open(self._ui_config_path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+
+            if not isinstance(config, dict):
+                return
+
+            self.filter_name = config.get("filter_name") or None
+            self.filter_address = config.get("filter_address") or None
+
+            debug_mode = config.get("debug_mode")
+            if debug_mode in {"none", "console", "file", "both"}:
+                self.debug_mode = debug_mode
+
+            hci_snoop = config.get("hci_snoop", {})
+            if isinstance(hci_snoop, dict):
+                if isinstance(hci_snoop.get("ellisys_host"), str):
+                    self.ellisys_host = hci_snoop["ellisys_host"]
+
+                try:
+                    port_value = int(hci_snoop.get("ellisys_port", self.ellisys_port))
+                    if 0 <= port_value <= 65535:
+                        self.ellisys_port = port_value
+                except (TypeError, ValueError):
+                    pass
+
+                if isinstance(hci_snoop.get("btsnoop_filename"), str):
+                    self.btsnoop_filename = hci_snoop["btsnoop_filename"]
+
+                stream = hci_snoop.get("ellisys_stream")
+                if stream in {"primary", "secondary", "tertiary"}:
+                    self.ellisys_stream = stream
+
+                self.snoop_console_logging = bool(
+                    hci_snoop.get("snoop_console_logging", self.snoop_console_logging)
+                )
+        except Exception as e:
+            logger.debug(f"UI config load skipped: {e}")
+
+    def _save_ui_config(self):
+        """Persist UI/runtime configuration to disk."""
+        try:
+            os.makedirs(os.path.dirname(self._ui_config_path), exist_ok=True)
+            config = {
+                "filter_name": self.filter_name,
+                "filter_address": self.filter_address,
+                "debug_mode": self.debug_mode,
+                "hci_snoop": {
+                    "ellisys_host": self.ellisys_host,
+                    "ellisys_port": self.ellisys_port,
+                    "btsnoop_filename": self.btsnoop_filename,
+                    "ellisys_stream": self.ellisys_stream,
+                    "snoop_console_logging": self.snoop_console_logging,
+                },
+            }
+            with open(self._ui_config_path, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, indent=2)
+                handle.write("\n")
+        except Exception as e:
+            logger.debug(f"UI config save skipped: {e}")
 
     def _event_names_from_emitter(self, emitter):
         """Return all EVENT_* string constants defined on an emitter class."""
@@ -643,6 +717,7 @@ class BLETestingMenu:
         if clear == 'y':
             self.filter_name = None
             self.filter_address = None
+            self._save_ui_config()
             print("✓ Filters cleared\n")
             return
         
@@ -656,6 +731,7 @@ class BLETestingMenu:
         
         self.filter_name = name_input if name_input else None
         self.filter_address = addr_input if addr_input else None
+        self._save_ui_config()
         
         print()
         print("✓ Filters updated:")
@@ -714,8 +790,15 @@ class BLETestingMenu:
                 # Ensure it has a valid extension
                 self.btsnoop_filename = "logs/hci_capture.log"
             
-            console_log = input("Enable console packet logging? (y/n, default n): ").strip().lower()
-            enable_console = console_log == 'y'
+            default_console = 'y' if self.snoop_console_logging else 'n'
+            console_log = input(
+                f"Enable console packet logging? (y/n, default {default_console}): "
+            ).strip().lower()
+            if console_log:
+                self.snoop_console_logging = console_log == 'y'
+            enable_console = self.snoop_console_logging
+
+            self._save_ui_config()
             
             enable = input("\nEnable HCI snoop logging with these settings? (y/n): ").strip().lower()
             if enable == 'y':
@@ -734,6 +817,7 @@ class BLETestingMenu:
     async def _enable_hci_snoop(self, enable_console: bool = False):
         """Enable HCI snoop logging"""
         try:
+            self.snoop_console_logging = enable_console
             # Create snooper
             self.hci_snooper = HCISnooper(
                 ellisys_host=self.ellisys_host,
@@ -753,6 +837,7 @@ class BLETestingMenu:
                 await self._close_scan_device()
             
             logger.info("HCI snoop logging enabled")
+            self._save_ui_config()
             
         except Exception as e:
             logger.error(f"Failed to enable HCI snoop: {e}")
@@ -774,6 +859,7 @@ class BLETestingMenu:
                 await self._close_scan_device()
             
             logger.info("HCI snoop logging disabled")
+            self._save_ui_config()
             
         except Exception as e:
             logger.error(f"Failed to disable HCI snoop: {e}")
@@ -809,7 +895,7 @@ class BLETestingMenu:
         else:
             print("\n✗ Invalid choice\n")
     
-    def _configure_debug_logging(self, mode: str):
+    def _configure_debug_logging(self, mode: str, persist: bool = True):
         """Configure debug logging based on mode"""
         self.debug_mode = mode
         root_logger = logging.getLogger()
@@ -878,6 +964,9 @@ class BLETestingMenu:
                 root_logger.addHandler(self.debug_file_handler)
             except Exception as e:
                 logger.error(f"Failed to create debug log file: {e}")
+
+        if persist:
+            self._save_ui_config()
 
     async def _get_scan_device(self):
         if self._scan_device is not None:
@@ -1818,7 +1907,7 @@ class BLETestingMenu:
             print(f"  5. Bonding: {'ENABLED' if config['bonding_enabled'] else 'DISABLED'}")
             print(
                 "  6. Auto Pair/Encrypt on Security Request: "
-                f"{'ENABLED' if self.auto_pair_encrypt_on_security_request else 'DISABLED'}"
+                f"{'ENABLED' if config.get('auto_pair_encrypt_on_security_request', True) else 'DISABLED'}"
             )
             print("  0. Back to Main Menu\n")
 
@@ -1844,7 +1933,10 @@ class BLETestingMenu:
     async def menu_smp_auto_pair_encrypt(self):
         """Toggle auto pair/encrypt behavior on peer security requests."""
         print_section("Auto Pair/Encrypt on Security Request")
-        current = self.auto_pair_encrypt_on_security_request
+        current = self.connector.get_smp_config().get(
+            "auto_pair_encrypt_on_security_request", True
+        )
+        self.auto_pair_encrypt_on_security_request = current
         print(f"Current: {'ENABLED' if current else 'DISABLED'}")
         print("  1. Enable")
         print("  2. Disable")
@@ -1853,9 +1945,11 @@ class BLETestingMenu:
         choice = input("Select option: ").strip()
         if choice == "1":
             self.auto_pair_encrypt_on_security_request = True
+            self.connector.set_smp_auto_pair_encrypt_on_security_request(True)
             print("✓ Auto pair/encrypt enabled\n")
         elif choice == "2":
             self.auto_pair_encrypt_on_security_request = False
+            self.connector.set_smp_auto_pair_encrypt_on_security_request(False)
             print("✓ Auto pair/encrypt disabled\n")
         elif choice != "0":
             print("Invalid option\n")
@@ -2007,11 +2101,6 @@ class BLETestingMenu:
             print("Bonded keys are automatically used for encryption.")
             print("The connection may already be encrypted.\n")
             
-            confirm = input("Check/verify encryption status? (y/n): ").strip().lower()
-            if confirm != 'y':
-                print("Cancelled\n")
-                return
-            
             print("\nVerifying security status...")
             try:
                 success = await asyncio.wait_for(
@@ -2029,11 +2118,6 @@ class BLETestingMenu:
                 print(f"⚠ Security check: {e}\n")
         else:
             print("Device is not yet bonded - initiating pairing...\n")
-            confirm = input("Initiate pairing? (y/n): ").strip().lower()
-            if confirm != 'y':
-                print("Cancelled\n")
-                return
-            
             print("\nInitiating SMP pairing...")
             print("(Watch for pairing prompts - you may need to:")
             print("  - Enter a passkey")
@@ -2097,14 +2181,10 @@ class BLETestingMenu:
             addresses = list(bonded.keys())
             if 0 <= idx < len(addresses):
                 target_addr = addresses[idx]
-                confirm = input(f"\nUnpair {target_addr}? (y/n): ").strip().lower()
-                if confirm == 'y':
-                    if self.connector.delete_bonding(target_addr):
-                        print(f"\n✓ Bonding deleted for {target_addr}\n")
-                    else:
-                        print(f"\n✗ Failed to delete bonding for {target_addr}\n")
+                if self.connector.delete_bonding(target_addr):
+                    print(f"\n✓ Bonding deleted for {target_addr}\n")
                 else:
-                    print("Cancelled\n")
+                    print(f"\n✗ Failed to delete bonding for {target_addr}\n")
             else:
                 print("Invalid number\n")
         except ValueError:

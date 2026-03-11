@@ -4,5 +4,6 @@
   "le_secure_connections": false,
   "min_enc_key_size": 7,
   "max_enc_key_size": 16,
-  "bonding_enabled": true
+  "bonding_enabled": true,
+  "auto_pair_encrypt_on_security_request": false
 }

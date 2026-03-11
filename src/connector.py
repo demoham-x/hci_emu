@@ -157,6 +157,7 @@ class BLEConnector:
             'min_enc_key_size': 7,  # Minimum encryption key size
             'max_enc_key_size': 16,  # Maximum encryption key size (max is 16)
             'bonding_enabled': True,  # Bonding/key storage
+            'auto_pair_encrypt_on_security_request': True,  # Auto-pair on connect, auto-handle security requests
         }
         self._load_smp_config()
         
@@ -225,6 +226,12 @@ class BLEConnector:
             config.get('le_secure_connections', normalized['le_secure_connections'])
         )
         normalized['bonding_enabled'] = bool(config.get('bonding_enabled', normalized['bonding_enabled']))
+        normalized['auto_pair_encrypt_on_security_request'] = bool(
+            config.get(
+                'auto_pair_encrypt_on_security_request',
+                normalized['auto_pair_encrypt_on_security_request'],
+            )
+        )
 
         try:
             min_size = int(config.get('min_enc_key_size', normalized['min_enc_key_size']))
@@ -387,6 +394,12 @@ class BLEConnector:
         logger.info(f"[SMP] Bonding Enabled: {enabled}")
         self._save_smp_config()
 
+    def set_smp_auto_pair_encrypt_on_security_request(self, enabled: bool):
+        """Set auto pair/encrypt behavior for connection and security requests."""
+        self.smp_config['auto_pair_encrypt_on_security_request'] = enabled
+        logger.info(f"[SMP] Auto Pair/Encrypt on Security Request: {enabled}")
+        self._save_smp_config()
+
     
     async def connect_device(self, device_address: str) -> bool:
         """
@@ -535,8 +548,10 @@ class BLEConnector:
                 for local_addr, peers in bonds_data.items():
                     if isinstance(peers, dict) and peer_address in peers:
                         device_keys = peers[peer_address]
-                        has_ltk = "ltk_central" in device_keys or "ltk_peripheral" in device_keys
-                        has_irk = "irk" in device_keys
+                        has_ltk = "ltk" in device_keys or "ltk_central" in device_keys or "ltk_peripheral" in device_keys
+                        irk_entry = device_keys.get("irk")
+                        irk_value = irk_entry.get("value", "") if isinstance(irk_entry, dict) else ""
+                        has_irk = bool(irk_entry) and irk_value.replace("0", "") != ""
                         has_csrk = "csrk" in device_keys
                         
                         logger.info(f"[BONDING] ✓ Keys saved for {peer_address}")

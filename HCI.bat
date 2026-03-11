@@ -10,8 +10,19 @@ echo.
 
 echo Starting application...
 echo.
+set "BASE=%~dp0"
 
-python C:\workspace\misc\bumble_hci\src\main.py
+REM Build path to main.py
+set "TARGET=%BASE%src\main.py"
+
+REM Check if the file exists
+if not exist "%TARGET%" (
+    echo [ERROR] Cannot find: "%TARGET%"
+    exit /b 1
+)
+
+REM Run Python
+python "%TARGET%
 
 REM Store exit code
 set ERROR_CODE=%errorlevel%
