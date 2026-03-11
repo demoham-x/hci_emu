@@ -91,6 +91,252 @@ class BLETestingApp:
         self.ellisys_port = 24352
         self.btsnoop_filename = "logs/hci_capture.log"  # .log or .btsnoop format
         self.ellisys_stream = "primary"  # primary, secondary, or tertiary
+        self._connect_in_progress = False
+        self._connect_target_address = None
+        self._post_connect_task = None
+        self._connect_auto_pair_if_unbonded = True
+        self._security_request_task = None
+        self._pairing_task = None
+        self._pairing_in_progress = False
+
+    def _event_names_from_emitter(self, emitter):
+        """Return all EVENT_* string constants defined on an emitter class."""
+        event_names = set()
+        for attr_name in dir(type(emitter)):
+            if not attr_name.startswith("EVENT_"):
+                continue
+            attr_value = getattr(type(emitter), attr_name, None)
+            if isinstance(attr_value, str):
+                event_names.add(attr_value)
+        return sorted(event_names)
+
+    def _register_device_events(self, device):
+        """Register all device-level events in one place."""
+
+        def on_connection(connection):
+            self.connector.connected_device = connection
+            self.connected = True
+            self.current_device = str(connection.peer_address)
+            logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
+            print(f"\n[CONNECTION] Established to {connection.peer_address}")
+            if self._connect_in_progress:
+                self._post_connect_task = asyncio.create_task(
+                    self._handle_connection_ready(connection)
+                )
+
+        def on_connection_failure(error):
+            self.connected = False
+            self.current_device = None
+            self.connector.connected_device = None
+            self._connect_in_progress = False
+            self._connect_target_address = None
+            logger.error(f"[CONNECTION FAILED] Error: {error}")
+            print(f"\n[CONNECTION FAILED] {error}")
+
+        custom_handlers = {
+            "connection": on_connection,
+            "connection_failure": on_connection_failure,
+        }
+
+        for event_name in self._event_names_from_emitter(device):
+            if event_name in custom_handlers:
+                device.on(event_name, custom_handlers[event_name])
+                continue
+
+            def on_event(*args, _event=event_name):
+                logger.debug(f"[DEVICE EVENT] {_event}: {args!r}")
+
+            device.on(event_name, on_event)
+
+    def _register_connection_events(self, connection):
+        """Register all connection-level events in one place."""
+
+        def on_disconnection(reason):
+            logger.info(f"[DISCONNECTION] Remote device disconnected, reason: {reason}")
+            print(f"\n[DISCONNECTION] Remote device disconnected (reason: {reason})")
+            self.connected = False
+            self.current_device = None
+            self.connector.connected_device = None
+
+        custom_handlers = {
+            "disconnection": on_disconnection,
+            "connection_encryption_change": self._on_connection_encryption_change,
+            "connection_encryption_failure": self._on_connection_encryption_failure,
+            "connection_encryption_key_refresh": self._on_connection_encryption_key_refresh,
+            "connection_parameters_update": self._on_connection_parameters_update,
+            "pairing_start": self._on_pairing_start,
+            "pairing": self._on_pairing_complete,
+            "pairing_failure": self._on_pairing_failure,
+            "security_request": self._on_security_request,
+        }
+
+        for event_name in self._event_names_from_emitter(connection):
+            if event_name in custom_handlers:
+                connection.on(event_name, custom_handlers[event_name])
+                continue
+
+            def on_event(*args, _event=event_name):
+                logger.debug(f"[CONNECTION EVENT] {_event}: {args!r}")
+
+            connection.on(event_name, on_event)
+
+    def _on_pairing_start(self, *args):
+        """Handle LE pairing_start event."""
+        self._pairing_in_progress = True
+        logger.info(f"[PAIRING EVENT] pairing_start: {args!r}")
+        print("[PAIRING] Started")
+
+    def _on_connection_encryption_change(self, *args):
+        """Handle LE connection_encryption_change event."""
+        logger.info(f"[SECURITY EVENT] connection_encryption_change: {args!r}")
+        print("[SECURITY] Encryption state changed")
+
+    def _on_connection_encryption_failure(self, *args):
+        """Handle LE connection_encryption_failure event."""
+        logger.warning(f"[SECURITY EVENT] connection_encryption_failure: {args!r}")
+        print("[SECURITY] Encryption failed")
+
+    def _on_connection_encryption_key_refresh(self, *args):
+        """Handle LE connection_encryption_key_refresh event."""
+        logger.info(f"[SECURITY EVENT] connection_encryption_key_refresh: {args!r}")
+        print("[SECURITY] Encryption key refreshed")
+
+    def _on_connection_parameters_update(self, *args):
+        """Handle LE connection_parameters_update event."""
+        logger.info(f"[CONNECTION EVENT] connection_parameters_update: {args!r}")
+        print("[CONNECTION] Parameters updated")
+
+    def _on_pairing_complete(self, *args):
+        """Handle LE pairing completion event."""
+        self._pairing_in_progress = False
+        logger.info(f"[PAIRING EVENT] pairing: {args!r}")
+        print("[PAIRING] Completed")
+
+    def _on_pairing_failure(self, *args):
+        """Handle LE pairing failure event."""
+        self._pairing_in_progress = False
+        logger.warning(f"[PAIRING EVENT] pairing_failure: {args!r}")
+        print("[PAIRING] Failed")
+
+    def _start_pairing_non_blocking(self, connection, source: str):
+        """Start pairing without blocking; completion is tracked by LE events."""
+        if self._pairing_in_progress:
+            logger.info(f"[PAIRING] Pairing already in progress, source={source}")
+            return
+
+        if self._pairing_task and not self._pairing_task.done():
+            logger.info(f"[PAIRING] Pairing task already running, source={source}")
+            return
+
+        if not self._scan_device:
+            logger.warning("[PAIRING] Cannot start pairing: scan device is not ready")
+            return
+
+        logger.info(f"[PAIRING] Starting non-blocking pairing from {source}")
+        self._pairing_in_progress = True
+        self._pairing_task = asyncio.create_task(self._scan_device.pair(connection))
+
+        def _on_done(task):
+            try:
+                task.result()
+            except Exception as e:
+                self._pairing_in_progress = False
+                logger.warning(f"[PAIRING] Pairing task ended with error: {e}")
+
+        self._pairing_task.add_done_callback(_on_done)
+
+    def _on_security_request(self, auth_req: int):
+        """Handle SMP security request from peer - always honor peer requests."""
+        logger.info(f"[SECURITY REQUEST] auth_req=0x{auth_req:02X}")
+        print(f"\n[SECURITY REQUEST] Peer requested security (auth_req=0x{auth_req:02X})")
+
+        if self._security_request_task and not self._security_request_task.done():
+            logger.debug("Security request handling already in progress")
+            return
+
+        self._security_request_task = asyncio.create_task(
+            self._handle_security_request_async()
+        )
+
+    async def _handle_security_request_async(self):
+        """Auto pair or encrypt in response to peer security request."""
+        connection = self.connector.connected_device
+        if not connection:
+            return
+
+        try:
+            address = self.current_device or str(connection.peer_address)
+            is_bonded = self.connector.is_device_bonded(address)
+
+            if is_bonded:
+                logger.info("[SECURITY REQUEST] Device bonded, establishing encryption")
+                print("[SECURITY REQUEST] Device bonded, establishing encryption...")
+                success = await asyncio.wait_for(self.connector.establish_security(), timeout=15.0)
+                if success:
+                    print("[SECURITY REQUEST] Encryption established")
+                else:
+                    print("[SECURITY REQUEST] Could not establish encryption")
+            else:
+                logger.info("[SECURITY REQUEST] Device not bonded, starting pairing")
+                print("[SECURITY REQUEST] Device not bonded, initiating pairing...")
+                self._start_pairing_non_blocking(connection, source="security_request")
+        except Exception as e:
+            logger.warning(f"[SECURITY REQUEST] Auto security handling failed: {e}")
+            print(f"[SECURITY REQUEST] Auto security handling failed: {e}")
+
+    async def _cancel_connect_on_timeout(self, device, address: str, connect_task):
+        """Cancel a pending connect task and issue HCI cancel when timer expires."""
+        if connect_task.done():
+            return
+
+        logger.error(f"Connection timeout to {address}")
+        connect_task.cancel()
+        try:
+            from bumble.hci import HCI_LE_Create_Connection_Cancel_Command
+
+            await device.send_command(HCI_LE_Create_Connection_Cancel_Command())
+            logger.info("Sent HCI_LE_Create_Connection_Cancel to device")
+        except Exception as e:
+            logger.debug(f"Could not cancel HCI connection: {e}")
+
+        self._connect_in_progress = False
+        self._connect_target_address = None
+        self._suppress_adv_printing = False
+        print("✗ Connection timeout - device not responding after timeout")
+        print("  - Is device powered on and in range?")
+        print("  - Try scanning again (option 1)\n")
+
+    async def _handle_connection_ready(self, connection, auto_pair_if_unbonded: bool = True):
+        """Handle post-connection setup from event callback."""
+        auto_pair_if_unbonded = self._connect_auto_pair_if_unbonded
+        address = self._connect_target_address or str(connection.peer_address)
+        self.connector.device = self._scan_device
+        self._register_connection_events(connection)
+
+        print(f"✓ Successfully connected to {address}")
+
+        is_bonded = self.connector.is_device_bonded(address)
+
+        if auto_pair_if_unbonded and not is_bonded:
+            print("\nInitiating automatic pairing on connection...\n")
+            logger.info("[APP] Auto-pairing on connection (flag enabled)")
+            self._start_pairing_non_blocking(connection, source="connection_ready")
+            print("Pairing started in background. Completion will be reported via LE events.\n")
+        elif not auto_pair_if_unbonded and not is_bonded:
+            print("\n[INFO] Auto-pairing is disabled. Device not bonded.\n")
+            logger.info("[APP] Auto-pairing disabled, skipping pairing")
+        elif is_bonded:
+            print("✓ Device is already bonded - no pairing needed\n")
+
+        print("Connection ready.\n")
+        print("Next steps:")
+        print("  - Option 9: Encrypt connection (if bonded)")
+        print("  - Option 3: Discover GATT Services")
+        print("  - Option 11: Disconnect\n")
+
+        self._connect_in_progress = False
+        self._connect_target_address = None
+        self._connect_auto_pair_if_unbonded = True
 
     async def connect(self, address: str, timeout: float = 30.0, auto_pair_if_unbonded: bool = True):
         """Reusable connect wrapper for both scripts and menu UI."""
@@ -109,74 +355,35 @@ class BLETestingApp:
                 await self._scan_device.stop_scanning()
                 await asyncio.sleep(1)
 
+            self._connect_in_progress = True
+            self._connect_target_address = address
+            self._post_connect_task = None
+            self._connect_auto_pair_if_unbonded = auto_pair_if_unbonded
+
             self._suppress_adv_printing = True
-            connect_task = None
+            connect_task = asyncio.create_task(self._scan_device.connect(Address(address)))
+            loop = asyncio.get_running_loop()
+            timeout_handle = loop.call_later(
+                timeout,
+                lambda: asyncio.create_task(
+                    self._cancel_connect_on_timeout(self._scan_device, address, connect_task)
+                ),
+            )
+
             try:
-                connect_task = asyncio.create_task(
-                    self._scan_device.connect(Address(address))
-                )
-                self.connector.connected_device = await asyncio.wait_for(
-                    connect_task,
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                if connect_task:
-                    connect_task.cancel()
-                try:
-                    from bumble.hci import HCI_LE_Create_Connection_Cancel_Command
-                    await self._scan_device.send_command(HCI_LE_Create_Connection_Cancel_Command())
-                    logger.info(f"Sent HCI_LE_Create_Connection_Cancel to device")
-                except Exception as e:
-                    logger.debug(f"Could not cancel HCI connection: {e}")
+                self.connector.connected_device = await connect_task
+            except asyncio.CancelledError:
+                return
+            finally:
+                timeout_handle.cancel()
                 self._suppress_adv_printing = False
-                raise
-            self._suppress_adv_printing = False
 
-            self.connector.device = self._scan_device
-            
-            # Register disconnection event handler
-            def on_disconnection(reason):
-                """Handle remote disconnection event"""
-                logger.info(f"[DISCONNECTION] Remote device disconnected, reason: {reason}")
-                print(f"\n[DISCONNECTION] Remote device disconnected (reason: {reason})")
-                self.connected = False
-                self.current_device = None
-                self.connector.connected_device = None
-            
-            self.connector.connected_device.on('disconnection', on_disconnection)
-            
-            self.connected = True
-            self.current_device = address
-            print(f"✓ Successfully connected to {address}")
-
-            is_bonded = self.connector.is_device_bonded(address)
-
-            if auto_pair_if_unbonded and not is_bonded:
-                print("\nInitiating pairing (peer requested security)...\n")
-                try:
-                    await asyncio.wait_for(
-                        self._scan_device.pair(self.connector.connected_device),
-                        timeout=30.0,
-                    )
-                    print("✓ Pairing completed\n")
-                except Exception as e:
-                    logger.warning(f"Pairing did not complete immediately for {address}: {e}")
-                    print("Note: Pairing may complete in background. Check logs if needed.\n")
-            elif is_bonded:
-                print("✓ Device is already bonded - no pairing needed\n")
-
-            print("Connection ready.\n")
-            print("Next steps:")
-            print("  - Option 9: Encrypt connection (if bonded)")
-            print("  - Option 3: Discover GATT Services")
-            print("  - Option 11: Disconnect\n")
-        except asyncio.TimeoutError:
-            self._suppress_adv_printing = False
-            logger.error(f"Connection timeout to {address}")
-            print("✗ Connection timeout - device not responding after timeout")
-            print("  - Is device powered on and in range?")
-            print("  - Try scanning again (option 1)\n")
+            if self._post_connect_task:
+                await self._post_connect_task
         except Exception as e:
+            self._connect_in_progress = False
+            self._connect_target_address = None
+            self._connect_auto_pair_if_unbonded = True
             self._suppress_adv_printing = False
             logger.error(f"Connection failed: {e}", exc_info=True)
             print(f"✗ Connection error: {e}")
@@ -736,20 +943,8 @@ class BLETestingApp:
         self.connector.setup_pairing_on_device(self._scan_device)
         
         await self._scan_device.power_on()
-        
-        # Register device-level connection event handlers
-        def on_connection(connection):
-            """Handle successful connection establishment"""
-            logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
-            print(f"\n[CONNECTION] ✓ Established to {connection.peer_address}")
-        
-        def on_connection_failure(error):
-            """Handle connection failure"""
-            logger.error(f"[CONNECTION FAILED] Error: {error}")
-            print(f"\n[CONNECTION FAILED] ✗ {error}")
-        
-        self._scan_device.on('connection', on_connection)
-        self._scan_device.on('connection_failure', on_connection_failure)
+
+        self._register_device_events(self._scan_device)
         
         self._scan_ready = True
         return self._scan_device
