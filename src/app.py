@@ -95,6 +95,9 @@ class BLETestingApp:
         self.btsnoop_filename = "logs/hci_capture.log"  # .log or .btsnoop format
         self.ellisys_stream = "primary"  # primary, secondary, or tertiary
         self.snoop_console_logging = False
+        self.snoop_auto_enable = False
+        self.snoop_ellisys_enabled = True
+        self.snoop_file_enabled = True
         self._connect_in_progress = False
         self._connect_target_address = None
         self._post_connect_task = None
@@ -148,6 +151,15 @@ class BLETestingApp:
                 self.snoop_console_logging = bool(
                     hci_snoop.get("snoop_console_logging", self.snoop_console_logging)
                 )
+                self.snoop_auto_enable = bool(
+                    hci_snoop.get("enabled", self.snoop_auto_enable)
+                )
+                self.snoop_ellisys_enabled = bool(
+                    hci_snoop.get("enable_ellisys", self.snoop_ellisys_enabled)
+                )
+                self.snoop_file_enabled = bool(
+                    hci_snoop.get("enable_file", self.snoop_file_enabled)
+                )
         except Exception as e:
             logger.debug(f"UI config load skipped: {e}")
 
@@ -160,6 +172,9 @@ class BLETestingApp:
                 "filter_address": self.filter_address,
                 "debug_mode": self.debug_mode,
                 "hci_snoop": {
+                    "enabled": self.snoop_auto_enable,
+                    "enable_ellisys": self.snoop_ellisys_enabled,
+                    "enable_file": self.snoop_file_enabled,
                     "ellisys_host": self.ellisys_host,
                     "ellisys_port": self.ellisys_port,
                     "btsnoop_filename": self.btsnoop_filename,
@@ -417,6 +432,8 @@ class BLETestingApp:
     async def connect(self, address: str, timeout: float = 30.0, auto_pair_if_unbonded: Optional[bool] = None):
         """Reusable connect wrapper for both scripts and menu UI."""
         from bumble.hci import Address
+
+        await self._auto_enable_hci_snoop_on_startup()
 
         address = format_address(address)
         print(f"\nConnecting to {address}...")
@@ -816,6 +833,24 @@ class BLETestingApp:
             elif not self.btsnoop_filename.endswith(('.log', '.btsnoop')):
                 # Ensure it has a valid extension
                 self.btsnoop_filename = "logs/hci_capture.log"
+
+            default_ellisys = 'y' if self.snoop_ellisys_enabled else 'n'
+            ellisys_output = input(
+                f"Enable Ellisys UDP output? (y/n, default {default_ellisys}): "
+            ).strip().lower()
+            if ellisys_output:
+                self.snoop_ellisys_enabled = ellisys_output == 'y'
+
+            default_file = 'y' if self.snoop_file_enabled else 'n'
+            file_output = input(
+                f"Enable capture file storage? (y/n, default {default_file}): "
+            ).strip().lower()
+            if file_output:
+                self.snoop_file_enabled = file_output == 'y'
+
+            if not self.snoop_ellisys_enabled and not self.snoop_file_enabled:
+                print("\n✗ At least one output must be enabled (Ellisys UDP or capture file).\n")
+                return
             
             default_console = 'y' if self.snoop_console_logging else 'n'
             console_log = input(
@@ -830,16 +865,33 @@ class BLETestingApp:
             enable = input("\nEnable HCI snoop logging with these settings? (y/n): ").strip().lower()
             if enable == 'y':
                 await self._enable_hci_snoop(enable_console)
-                print("\n✓ HCI snoop logging enabled\n")
-                print("Packets will be sent to:")
-                print(f"  - Ellisys Analyzer (UDP {self.ellisys_host}:{self.ellisys_port} - {self.ellisys_stream.upper()} stream)")
-                print(f"  - Capture file ({self.btsnoop_filename})")
-                print(f"    Format: BTSnoop (compatible with Ellisys, Wireshark, etc.)")
-                if enable_console:
-                    print("  - Console output")
-                print()
+                if self.snoop_enabled:
+                    print("\n✓ HCI snoop logging enabled\n")
+                    print("Packets will be sent to:")
+                    if self.snoop_ellisys_enabled:
+                        print(f"  - Ellisys Analyzer (UDP {self.ellisys_host}:{self.ellisys_port} - {self.ellisys_stream.upper()} stream)")
+                    if self.snoop_file_enabled:
+                        print(f"  - Capture file ({self.btsnoop_filename})")
+                        print(f"    Format: BTSnoop (compatible with Ellisys, Wireshark, etc.)")
+                    if enable_console:
+                        print("  - Console output")
+                    print()
             else:
                 print("\n✗ HCI snoop logging not enabled\n")
+
+    async def _auto_enable_hci_snoop_on_startup(self):
+        """Enable HCI snoop automatically if configured in UI settings."""
+        if not self.snoop_auto_enable or self.snoop_enabled:
+            return
+
+        print("[HCI SNOOP] Auto-enable from config is ON. Starting...")
+        await self._enable_hci_snoop(self.snoop_console_logging)
+        if self.snoop_enabled:
+            print(
+                f"[HCI SNOOP] Auto-enabled: UDP {self.ellisys_host}:{self.ellisys_port} ({self.ellisys_stream.upper()})"
+            )
+        else:
+            print("[HCI SNOOP] Auto-enable failed. Review logs and configuration.")
     
     async def _enable_hci_snoop(self, enable_console: bool = False):
         """Enable HCI snoop logging"""
@@ -849,14 +901,19 @@ class BLETestingApp:
             self.hci_snooper = HCISnooper(
                 ellisys_host=self.ellisys_host,
                 ellisys_port=self.ellisys_port,
-                btsnoop_file=self.btsnoop_filename,
+                btsnoop_file=self.btsnoop_filename if self.snoop_file_enabled else None,
+                enable_ellisys=self.snoop_ellisys_enabled,
                 enable_console=enable_console,
                 stream=self.ellisys_stream
             )
             
             # Start snooper
-            await self.hci_snooper.start()
+            started = await self.hci_snooper.start()
+            if not started:
+                raise RuntimeError("HCI snooper failed to start")
+
             self.snoop_enabled = True
+            self.snoop_auto_enable = True
             
             # If scan device exists, we need to restart it with wrapped transport
             if self._scan_device:
@@ -870,6 +927,8 @@ class BLETestingApp:
             logger.error(f"Failed to enable HCI snoop: {e}")
             print(f"✗ Failed to enable HCI snoop: {e}")
             self.snoop_enabled = False
+            self.snoop_auto_enable = False
+            self.hci_snooper = None
     
     async def _disable_hci_snoop(self):
         """Disable HCI snoop logging"""
@@ -879,6 +938,7 @@ class BLETestingApp:
                 self.hci_snooper = None
             
             self.snoop_enabled = False
+            self.snoop_auto_enable = False
             
             # If scan device exists, restart it without wrapper
             if self._scan_device:
@@ -2142,6 +2202,7 @@ class BLETestingApp:
         """Run the interactive menu"""
         print_section("BUMBLE BLE TESTING FRAMEWORK")
         print(f"Transport: {self.transport_spec}\n")
+        await self._auto_enable_hci_snoop_on_startup()
 
         async def _prompt(text: str) -> str:
             return await asyncio.to_thread(input, text)

@@ -59,6 +59,7 @@ class HCISnooper:
                  ellisys_host: str = "127.0.0.1",
                  ellisys_port: int = 24352,
                  btsnoop_file: Optional[str] = None,
+                 enable_ellisys: bool = True,
                  enable_console: bool = False,
                  stream: str = "primary"):
         """
@@ -68,12 +69,15 @@ class HCISnooper:
             ellisys_host: Ellisys analyzer host
             ellisys_port: Ellisys injection port (24352)
             btsnoop_file: Path to BTSnoop output file
+            enable_ellisys: Enable sending packets to Ellisys UDP port
             enable_console: Print packets to console
             stream: "primary", "secondary", or "tertiary" stream name
         """
         self.ellisys_host = ellisys_host
         self.ellisys_port = ellisys_port
         self.btsnoop_file = btsnoop_file
+        self.enable_ellisys = enable_ellisys
+        self.project_root = Path(__file__).resolve().parent.parent
         self.enable_console = enable_console
         self.stream_name = stream.lower()
         
@@ -89,36 +93,50 @@ class HCISnooper:
     async def start(self):
         """Start snooping"""
         try:
-            # Setup Ellisys UDP injection socket
-            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket.settimeout(1.0)
-            
+            if not self.enable_ellisys and not self.btsnoop_file:
+                raise ValueError("No HCI snoop output enabled (Ellisys and file logging are both disabled)")
+
             print(f"\n[HCI SNOOP] ✓ Initialized")
-            print(f"[HCI SNOOP] Target: {self.ellisys_host}:{self.ellisys_port}")
-            print(f"[HCI SNOOP] Using Ellisys HCI Injection Service (0x0002)")
-            print(f"[HCI SNOOP] Stream: {self.stream_name.upper()}")
-            logger.info(f"✓ Ellisys UDP injection configured: {self.ellisys_host}:{self.ellisys_port}")
-            
-            # Send test packet using CORRECT Ellisys protocol
-            test_packet = self._build_ellisys_injection_packet(
-                self.ELLISYS_HCI_CMD,
-                bytes.fromhex("03 0c 00"),  # HCI Reset command
-                time.time()  # Current timestamp
-            )
-            try:
-                self.udp_socket.sendto(test_packet, (self.ellisys_host, self.ellisys_port))
-                self.last_send_time = time.time()
-                print(f"[HCI SNOOP] ✓ Test packet sent (Ellisys Injection API)")
-                print(f"[HCI SNOOP] Expected: HCI packets appear in Ellisys Analyzer\n")
-                logger.info("Test packet sent to Ellisys using Injection API")
-            except (BlockingIOError, socket.error) as e:
-                logger.warning(f"Test packet send failed: {e}")
-                print(f"[HCI SNOOP] ⚠ Test packet failed: {e}\n")
+
+            if self.enable_ellisys:
+                # Setup Ellisys UDP injection socket
+                self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_socket.settimeout(1.0)
+
+                print(f"[HCI SNOOP] Target: {self.ellisys_host}:{self.ellisys_port}")
+                print(f"[HCI SNOOP] Using Ellisys HCI Injection Service (0x0002)")
+                print(f"[HCI SNOOP] Stream: {self.stream_name.upper()}")
+                logger.info(f"✓ Ellisys UDP injection configured: {self.ellisys_host}:{self.ellisys_port}")
+
+                # Send test packet using CORRECT Ellisys protocol
+                test_packet = self._build_ellisys_injection_packet(
+                    self.ELLISYS_HCI_CMD,
+                    bytes.fromhex("03 0c 00"),  # HCI Reset command
+                    time.time()  # Current timestamp
+                )
+                try:
+                    self.udp_socket.sendto(test_packet, (self.ellisys_host, self.ellisys_port))
+                    self.last_send_time = time.time()
+                    print(f"[HCI SNOOP] ✓ Test packet sent (Ellisys Injection API)")
+                    print(f"[HCI SNOOP] Expected: HCI packets appear in Ellisys Analyzer\n")
+                    logger.info("Test packet sent to Ellisys using Injection API")
+                except (BlockingIOError, socket.error) as e:
+                    logger.warning(f"Test packet send failed: {e}")
+                    print(f"[HCI SNOOP] ⚠ Test packet failed: {e}\n")
+            else:
+                print("[HCI SNOOP] Ellisys UDP output: DISABLED")
             
             # Setup BTSnoop file
             if self.btsnoop_file:
-                self.file_handle = open(self.btsnoop_file, 'wb')
+                btsnoop_path = Path(self.btsnoop_file).expanduser()
+                if not btsnoop_path.is_absolute():
+                    btsnoop_path = self.project_root / btsnoop_path
+
+                btsnoop_path.parent.mkdir(parents=True, exist_ok=True)
+
+                self.file_handle = open(btsnoop_path, 'wb')
                 self.file_handle.write(self.BTSNOOP_HEADER)
+                self.btsnoop_file = str(btsnoop_path)
                 logger.info(f"✓ BTSnoop file opened: {self.btsnoop_file}")
                 print(f"[BTSNOOP FILE] {self.btsnoop_file}\n")
             
