@@ -108,6 +108,31 @@ bumble-hci-bridge usb:0 tcp-server:127.0.0.1:9001
 python src\main.py
 ```
 
+### 5. Run After Pip Install (Installed Commands)
+
+If users install the package (`pip install HCIEMU`), they can run the app using
+installed commands instead of repo paths:
+
+```powershell
+# Terminal 1
+BRIDGE
+
+# Terminal 2
+HCI
+```
+
+Custom transport examples:
+
+```powershell
+BRIDGE usb:1 tcp-server:127.0.0.1:9001
+BRIDGE serial:COM5,115200 tcp-server:127.0.0.1:9001
+```
+
+Aliases:
+- `hciemu` and `bumble-hci-menu` are aliases for `HCI`.
+
+Note: repo-clone users can still run [HCI.bat](HCI.bat) and [BRIDGE.bat](BRIDGE.bat).
+
 ## Linux Setup
 
 ### 1. Install Dependencies

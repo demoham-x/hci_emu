@@ -50,12 +50,11 @@ else:
     console = None
 
 # Import local modules
-sys.path.insert(0, os.path.dirname(__file__))
-from scanner import BLEScanner
-from connector import BLEConnector
-from utils import print_section, format_address
+from hciemu.scanner import BLEScanner
+from hciemu.connector import BLEConnector
+from hciemu.utils import print_section, format_address
 from bumble.keys import JsonKeyStore
-from hci_snooper import HCISnooper, BumbleHCITransportWrapper
+from hciemu.hci_snooper import HCISnooper, BumbleHCITransportWrapper
 
 
 class BLETestingApp:
