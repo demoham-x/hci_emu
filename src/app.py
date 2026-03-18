@@ -467,7 +467,8 @@ class BLETestingApp:
 
         try:
             if self._scan_device is None:
-                print("✗ Device not initialized. Run Bluetooth On first.\n")
+                # Device may have been closed by _auto_enable_hci_snoop_on_startup above;
+                # re-initialise silently with the (now-wrapped) transport.
                 await self._get_scan_device()
 
             if getattr(self._scan_device, "scanning", False):
