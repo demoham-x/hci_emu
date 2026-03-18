@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "HCIEMU"
+version = "1.0.1"
+description = "BLE testing toolkit built on Bumble with interactive menu, GATT ops, and HCI capture"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "demoham" }
+]
+dependencies = [
+  "bumble>=0.0.225",
+  "pyusb>=1.2.1",
+  "rich"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Hardware"
+]
+
+[project.urls]
+Homepage = "https://github.com/demoham-x/hci_emu"
+Repository = "https://github.com/demoham-x/hci_emu"
+Issues = "https://github.com/demoham-x/hci_emu/issues"
+
+[project.scripts]
+bumble-hci-menu = "main:run_cli"
+hciemu = "main:run_cli"
+HCI = "main:run_cli"
+BRIDGE = "main:run_bridge_cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["HCI.bat", "BRIDGE.bat"]
+py-modules = [
+  "app",
+  "connector",
+  "hci_snooper",
+  "main",
+  "menu",
+  "scanner",
+  "utils"
+]

@@ -15,6 +15,7 @@ import argparse
 import logging
 import os
 import sys
+import subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -42,10 +43,36 @@ async def main() -> None:
     await menu.run()
 
 
-if __name__ == "__main__":
+def run_cli() -> None:
+    """Synchronous CLI entrypoint for console_scripts."""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\nExit")
     except asyncio.CancelledError:
         print("\n\nOperation cancelled")
+
+
+def run_bridge_cli() -> None:
+    """Synchronous bridge entrypoint for console_scripts."""
+    parser = argparse.ArgumentParser(description="Run Bumble HCI bridge")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default="usb:0",
+        help="Bridge source transport (default: usb:0)",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default="tcp-server:127.0.0.1:9001",
+        help="Bridge target transport (default: tcp-server:127.0.0.1:9001)",
+    )
+    args = parser.parse_args()
+
+    command = ["bumble-hci-bridge", args.source, args.target]
+    raise SystemExit(subprocess.call(command))
+
+
+if __name__ == "__main__":
+    run_cli()

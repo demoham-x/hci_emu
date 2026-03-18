@@ -12,28 +12,59 @@
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Start Guide
 
-### Windows
+Choose one workflow:
 
-**1. Run Setup (first time only)**
+### Option A: Install from Package/Release (Fastest)
+
+If you install the package (for example `pip install HCIEMU`), these commands are available:
+
+- `HCI` - Launch the interactive menu app.
+- `BRIDGE` - Launch bridge with defaults (`usb:0` -> `tcp-server:127.0.0.1:9001`).
+- `BRIDGE <source> <target>` - Launch bridge with custom endpoints.
+- `hciemu` - Alias of `HCI`.
+- `bumble-hci-menu` - Alias of `HCI`.
+
+Windows example:
+
 ```powershell
-setup.bat
+# Terminal 1
+BRIDGE
+
+# Terminal 2
+HCI
 ```
 
-**2. Start HCI Bridge (Terminal 1 - as Administrator)**
+Custom bridge example:
+
 ```powershell
+BRIDGE serial:COM5,115200 tcp-server:127.0.0.1:9001
+```
+
+### Option B: Clone the Repository (Development/Source Mode)
+
+```powershell
+git clone <repository-url>
+cd bumble_hci
+```
+
+Windows quick run:
+
+```powershell
+setup.bat
+BRIDGE.bat
+HCI.bat
+```
+
+Source-mode commands also work directly:
+
+```powershell
+python src/main.py
 bumble-hci-bridge usb:0 tcp-server:127.0.0.1:9001
 ```
 
-**3. Run Application (Terminal 2)**
-```powershell
-run.bat
-```
-
-### Linux/macOS
-
-See [SETUP.md](SETUP.md) for detailed platform-specific instructions.
+Linux/macOS setup details: [SETUP.md](SETUP.md)
 
 ---
 
