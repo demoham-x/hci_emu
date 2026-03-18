@@ -9,8 +9,8 @@ that delegates all BLE operations to src/app.py.
 import asyncio
 import logging
 
-from app import BLETestingApp
-from utils import print_section, format_address
+from hciemu.app import BLETestingApp
+from hciemu.utils import print_section, format_address
 
 try:
     from rich.console import Console

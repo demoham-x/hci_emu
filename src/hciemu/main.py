@@ -13,13 +13,10 @@ Usage:
 import asyncio
 import argparse
 import logging
-import os
 import sys
 import subprocess
 
-sys.path.insert(0, os.path.dirname(__file__))
-
-from menu import BLETestingMenu
+from hciemu.menu import BLETestingMenu
 
 
 async def main() -> None:
@@ -71,7 +68,17 @@ def run_bridge_cli() -> None:
     args = parser.parse_args()
 
     command = ["bumble-hci-bridge", args.source, args.target]
-    raise SystemExit(subprocess.call(command))
+    try:
+        return_code = subprocess.call(command)
+        raise SystemExit(return_code)
+    except (FileNotFoundError, OSError) as exc:
+        print(
+            "Error: could not execute 'bumble-hci-bridge'. "
+            "Make sure it is installed, on your PATH, and that any "
+            "required virtual environment is activated.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

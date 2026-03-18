@@ -32,20 +32,13 @@ Repository = "https://github.com/demoham-x/hci_emu"
 Issues = "https://github.com/demoham-x/hci_emu/issues"
 
 [project.scripts]
-bumble-hci-menu = "main:run_cli"
-hciemu = "main:run_cli"
-HCI = "main:run_cli"
-BRIDGE = "main:run_bridge_cli"
+bumble-hci-menu = "hciemu.main:run_cli"
+hciemu = "hciemu.main:run_cli"
+HCI = "hciemu.main:run_cli"
+BRIDGE = "hciemu.main:run_bridge_cli"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
 script-files = ["HCI.bat", "BRIDGE.bat"]
-py-modules = [
-  "app",
-  "connector",
-  "hci_snooper",
-  "main",
-  "menu",
-  "scanner",
-  "utils"
-]
+
+[tool.setuptools.packages.find]
+where = ["src"]

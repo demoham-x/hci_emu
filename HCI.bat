@@ -19,12 +19,13 @@ if %errorlevel%==0 (
 ) else (
     REM Fallback for plain git clone usage.
     set "BASE=%~dp0"
-    set "TARGET=%BASE%src\main.py"
-    if not exist "%TARGET%" (
-        echo [ERROR] Cannot find: "%TARGET%"
+    if not exist "%BASE%src\hciemu\main.py" (
+        echo [ERROR] Cannot find: "%BASE%src\hciemu\main.py"
         exit /b 1
     )
-    python "%TARGET%" %*
+    pushd "%BASE%src"
+    python -m hciemu.main %*
+    popd
 )
 
 REM Store exit code
