@@ -10,22 +10,90 @@ Download and install Python 3.8+ from [python.org](https://www.python.org/downlo
 # Navigate to project directory
 cd bumble_hci
 
-# Create virtual environment
+# (Optional) Create and activate a virtual environment
+# Recommended to keep dependencies isolated, but you can skip this
+# and install directly into your system Python if you prefer.
 python -m venv venv
-
-# Activate virtual environment
 .\venv\Scripts\Activate.ps1
 
-# If you get execution policy error:
+# If you get an execution policy error when activating:
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. USB Bluetooth Adapter
-- Plug in USB Bluetooth adapter
-- Verify it's detected in Device Manager
+### 3. HCI Controller (USB, Built-in, or Serial)
+
+Bumble needs direct HCI access to a Bluetooth controller.  You can use **any** of the
+following — you are not limited to a USB dongle:
+
+| Controller type | Bridge transport flag | Notes |
+|---|---|---|
+| USB Bluetooth dongle | `usb:0` (or `usb:1`, `usb:2` …) | Plug-and-play on Linux. Needs WinUSB on Windows (see below). |
+| Built-in laptop Bluetooth (Intel, etc.) | `usb:0` after driver swap | Requires temporary WinUSB driver replacement on Windows. |
+| Serial / UART HCI device (Windows) | `serial:COM5,115200` | Replace `COM5` with your actual COM port. |\n| Serial / UART HCI device (Linux/Mac) | `serial:/dev/ttyUSB0,115200` | Common on embedded dev boards. |
+| TCP (already bridged) | `tcp-client:127.0.0.1:9001` | Default — connect to a running bridge. |
+
+---
+
+#### Windows — Replacing the Driver with WinUSB (Zadig)
+
+Windows locks Bluetooth controllers behind its own `BTHUSB` kernel driver, which
+prevents `libusb` (and therefore Bumble) from talking to the device directly.  The
+solution is to temporarily replace that driver with **WinUSB** using
+[Zadig](https://zadig.akeo.ie/).
+
+> **This works for any Bluetooth USB device** — a dedicated USB dongle *or* the
+> built-in Intel / Qualcomm / Broadcom adapter already in your laptop.
+
+**Step-by-step:**
+
+1. Download **Zadig** from <https://zadig.akeo.ie/> and run it (no install needed).
+2. In Zadig, open **Options → List All Devices** so every USB device is shown.
+3. In the device drop-down, select your Bluetooth controller.  
+   For a built-in Intel adapter it appears as **Intel(R) Wireless Bluetooth(R)**;  
+   a USB dongle usually shows a vendor name or "Bluetooth Adapter".
+4. Make sure the right-hand driver is set to **WinUSB**.
+5. Click **Replace Driver** and wait for it to finish.
+
+![Zadig — replacing BTHUSB with WinUSB](docs/ref_images/zadig.png)
+
+> The screenshot above shows an Intel built-in adapter (`USB ID 8087:0037`)
+> with the `BTHUSB` driver being replaced by `WinUSB (v6.1.7600.16385)`.
+
+After the replacement, run the bridge:
+
+```powershell
+bumble-hci-bridge usb:0 tcp-server:127.0.0.1:9001
+```
+
+If `usb:0` is not recognised, try `usb:1`, `usb:2`, etc. to find the right index.
+
+---
+
+#### Restoring the original Windows Bluetooth driver
+
+WinUSB disables the normal Windows Bluetooth stack while it is active.  To restore it:
+
+1. Open **Device Manager** (`Win + X → Device Manager`).
+2. Expand **Universal Serial Bus devices** (or **Other devices**).  
+   Your adapter will appear there as a generic USB device instead of under *Bluetooth*.
+3. Right-click the device → **Update driver**.
+4. Choose **Browse my computer for drivers → Let me pick from a list of available
+   drivers on my computer**.
+5. Select **Bluetooth** from the device-type list, then choose the original vendor
+   driver (e.g. *Intel(R) Wireless Bluetooth(R)*).
+6. Click **Next** and let Windows reinstall the driver.
+
+The adapter will reappear under the *Bluetooth* node and normal Windows Bluetooth
+(including the system tray icon) will work again.
+
+> **Tip:** You can switch back and forth as many times as you like — use WinUSB
+> while developing/testing with Bumble, restore the original driver when you need
+> normal Windows Bluetooth.
+
+---
 
 ### 4. Run Application
 
@@ -57,8 +125,13 @@ sudo pacman -S python python-pip libusb
 ### 2. Setup Project
 ```bash
 cd bumble_hci
+
+# (Optional) Create and activate a virtual environment
+# Recommended to keep dependencies isolated, but not required.
 python3 -m venv venv
 source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -104,8 +177,13 @@ brew install python@3.11 libusb
 ### 3. Setup Project
 ```bash
 cd bumble_hci
+
+# (Optional) Create and activate a virtual environment
+# Recommended to keep dependencies isolated, but not required.
 python3 -m venv venv
 source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
