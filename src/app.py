@@ -1372,8 +1372,37 @@ class BLETestingApp:
         """Power on Bluetooth controller"""
         print_section("Bluetooth On")
         try:
-            await self._get_scan_device()
+            device = await self._get_scan_device()
             print("✓ Bluetooth is ON\n")
+
+            # --- Controller info ---
+            try:
+                from bumble.hci import HCI_Read_Local_Version_Information_Command
+
+                resp = await device.send_command(
+                    HCI_Read_Local_Version_Information_Command()
+                )
+                p = resp.return_parameters
+                # hci_version is a SpecificationVersion enum, e.g. BLUETOOTH_CORE_5_2
+                ver_name = p.hci_version.name.replace("BLUETOOTH_CORE_", "").replace("_", ".")
+                try:
+                    from bumble.company_ids import COMPANY_IDENTIFIERS
+                    manufacturer_name = COMPANY_IDENTIFIERS.get(p.company_identifier, "Unknown")
+                except ImportError:
+                    manufacturer_name = "Unknown"
+                print(f"  Bluetooth version : {ver_name}  (HCI subversion 0x{p.hci_subversion:04X})")
+                print(f"  LMP version       : {p.lmp_version.name.replace('BLUETOOTH_CORE_', '').replace('_', '.')}  (LMP subversion 0x{p.lmp_subversion:04X})")
+                print(f"  Manufacturer      : {manufacturer_name} (0x{p.company_identifier:04X})")
+            except Exception as e:
+                logger.debug(f"Could not read local version: {e}")
+
+            try:
+                bd_addr = device.public_address
+                print(f"  BD Address        : {bd_addr}")
+            except Exception as e:
+                logger.debug(f"Could not read BD address: {e}")
+
+            print()
 
             # Show bonding status using shared renderer.
             bonded = self.connector.get_bonded_devices() or {}
