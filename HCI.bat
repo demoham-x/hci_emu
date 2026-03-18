@@ -13,7 +13,7 @@ echo.
 set "BASE=%~dp0"
 
 REM Build path to main.py
-set "TARGET=%BASE%src\menu.py"
+set "TARGET=%BASE%src\main.py"
 
 REM Check if the file exists
 if not exist "%TARGET%" (

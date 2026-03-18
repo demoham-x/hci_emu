@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
 Bumble BLE Testing - Application logic layer.
-"""
-"""
-~~~~NOT USED~~~~
 
-This module needs to be developed for wrapper to bumble to be used for scripts and interactive menu.
-The idea is to have a single app class that manages the BLE operations, state, and user interactions,
-while the main script can be a simple entry point that creates the app instance and runs the menu loop.
+BLETestingApp is the shared core used by both the interactive menu (menu.py)
+and standalone scripts.  main.py is the CLI entry point that wires them together.
 """
 
 import asyncio
