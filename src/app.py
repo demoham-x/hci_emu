@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
 Bumble BLE Testing - Application logic layer.
-"""
-"""
-~~~~NOT USED~~~~
 
-This module needs to be developed for wrapper to bumble to be used for scripts and interactive menu.
-The idea is to have a single app class that manages the BLE operations, state, and user interactions,
-while the main script can be a simple entry point that creates the app instance and runs the menu loop.
+BLETestingApp is the shared core used by both the interactive menu (menu.py)
+and standalone scripts.  main.py is the CLI entry point that wires them together.
 """
 
 import asyncio
@@ -471,7 +467,8 @@ class BLETestingApp:
 
         try:
             if self._scan_device is None:
-                print("✗ Device not initialized. Run Bluetooth On first.\n")
+                # Device may have been closed by _auto_enable_hci_snoop_on_startup above;
+                # re-initialise silently with the (now-wrapped) transport.
                 await self._get_scan_device()
 
             if getattr(self._scan_device, "scanning", False):
@@ -1375,8 +1372,37 @@ class BLETestingApp:
         """Power on Bluetooth controller"""
         print_section("Bluetooth On")
         try:
-            await self._get_scan_device()
+            device = await self._get_scan_device()
             print("✓ Bluetooth is ON\n")
+
+            # --- Controller info ---
+            try:
+                from bumble.hci import HCI_Read_Local_Version_Information_Command
+
+                resp = await device.send_command(
+                    HCI_Read_Local_Version_Information_Command()
+                )
+                p = resp.return_parameters
+                # hci_version is a SpecificationVersion enum, e.g. BLUETOOTH_CORE_5_2
+                ver_name = p.hci_version.name.replace("BLUETOOTH_CORE_", "").replace("_", ".")
+                try:
+                    from bumble.company_ids import COMPANY_IDENTIFIERS
+                    manufacturer_name = COMPANY_IDENTIFIERS.get(p.company_identifier, "Unknown")
+                except ImportError:
+                    manufacturer_name = "Unknown"
+                print(f"  Bluetooth version : {ver_name}  (HCI subversion 0x{p.hci_subversion:04X})")
+                print(f"  LMP version       : {p.lmp_version.name.replace('BLUETOOTH_CORE_', '').replace('_', '.')}  (LMP subversion 0x{p.lmp_subversion:04X})")
+                print(f"  Manufacturer      : {manufacturer_name} (0x{p.company_identifier:04X})")
+            except Exception as e:
+                logger.debug(f"Could not read local version: {e}")
+
+            try:
+                bd_addr = device.public_address
+                print(f"  BD Address        : {bd_addr}")
+            except Exception as e:
+                logger.debug(f"Could not read BD address: {e}")
+
+            print()
 
             # Show bonding status using shared renderer.
             bonded = self.connector.get_bonded_devices() or {}
@@ -2213,6 +2239,8 @@ class BLETestingApp:
                     print("\n✗ Pairing failed - check messages above\n")
             except asyncio.TimeoutError:
                 print("\n✗ Pairing timeout - device did not respond\n")
+            except asyncio.CancelledError:
+                print("\n✗ Pairing cancelled (device disconnected)\n")
             except Exception as e:
                 logger.error(f"Pairing error: {e}")
                 print(f"✗ Pairing error: {e}\n")

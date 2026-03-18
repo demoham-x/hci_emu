@@ -540,6 +540,10 @@ class BLEConnector:
         except asyncio.TimeoutError:
             logger.error("Pairing timeout - device not responding")
             return False
+        except asyncio.CancelledError as e:
+            # Bumble cancels the pairing future when a disconnection occurs.
+            logger.warning(f"Pairing cancelled: {e}")
+            return False
         except Exception as e:
             logger.error(f"Pairing failed: {e}", exc_info=True)
             return False
