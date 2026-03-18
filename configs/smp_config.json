@@ -1,0 +1,10 @@
+{
+  "io_capability": "KEYBOARD_ONLY",
+  "mitm_required": true,
+  "le_secure_connections": false,
+  "min_enc_key_size": 7,
+  "max_enc_key_size": 16,
+  "bonding_enabled": true,
+  "auto_pair_encrypt_on_security_request": true,
+  "auto_encrypt_if_bonded": true
+}

@@ -1,0 +1,3 @@
+bumble>=0.0.225
+pyusb>=1.2.1
+rich

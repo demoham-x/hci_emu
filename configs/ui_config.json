@@ -1,0 +1,15 @@
+{
+    "filter_name": null,
+    "filter_address": null,
+    "debug_mode": "none",
+    "hci_snoop": {
+        "enabled": true,
+        "enable_ellisys": true,
+        "enable_file": true,
+        "ellisys_host": "127.0.0.1",
+        "ellisys_port": 24352,
+        "btsnoop_filename": "logs/hci_capture.log",
+        "ellisys_stream": "primary",
+        "snoop_console_logging": false
+    }
+}
