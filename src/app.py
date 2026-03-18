@@ -2213,6 +2213,8 @@ class BLETestingApp:
                     print("\n✗ Pairing failed - check messages above\n")
             except asyncio.TimeoutError:
                 print("\n✗ Pairing timeout - device did not respond\n")
+            except asyncio.CancelledError:
+                print("\n✗ Pairing cancelled (device disconnected)\n")
             except Exception as e:
                 logger.error(f"Pairing error: {e}")
                 print(f"✗ Pairing error: {e}\n")
