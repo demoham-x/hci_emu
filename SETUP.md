@@ -32,7 +32,8 @@ following — you are not limited to a USB dongle:
 |---|---|---|
 | USB Bluetooth dongle | `usb:0` (or `usb:1`, `usb:2` …) | Plug-and-play on Linux. Needs WinUSB on Windows (see below). |
 | Built-in laptop Bluetooth (Intel, etc.) | `usb:0` after driver swap | Requires temporary WinUSB driver replacement on Windows. |
-| Serial / UART HCI device (Windows) | `serial:COM5,115200` | Replace `COM5` with your actual COM port. |\n| Serial / UART HCI device (Linux/Mac) | `serial:/dev/ttyUSB0,115200` | Common on embedded dev boards. |
+| Serial / UART HCI device (Windows) | `serial:COM5,115200` | Replace `COM5` with your actual COM port. |
+| Serial / UART HCI device (Linux/Mac) | `serial:/dev/ttyUSB0,115200` | Common on embedded dev boards. |
 | TCP (already bridged) | `tcp-client:127.0.0.1:9001` | Default — connect to a running bridge. |
 
 ---
