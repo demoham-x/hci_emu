@@ -11,6 +11,9 @@ echo.
 
 echo Starting application...
 echo.
+set "BASE=%~dp0"
+set "MAIN=%BASE%src\hciemu\main.py"
+set "BASEDIR=%BASE%src"
 
 REM Prefer installed package command when available.
 where hciemu >nul 2>nul
@@ -18,12 +21,11 @@ if %errorlevel%==0 (
     hciemu %*
 ) else (
     REM Fallback for plain git clone usage.
-    set "BASE=%~dp0"
-    if not exist "%BASE%src\hciemu\main.py" (
-        echo [ERROR] Cannot find: "%BASE%src\hciemu\main.py"
+    if not exist "%MAIN%" (
+        echo [ERROR] Cannot find: "%MAIN%"
         exit /b 1
     )
-    pushd "%BASE%src"
+    pushd "%BASEDIR%"
     python -m hciemu.main %*
     popd
 )
