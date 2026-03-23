@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Callable
 from bumble.keys import JsonKeyStore
 from bumble import att
+from hciemu.paths import ensure_user_files, get_user_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ class BLEConnector:
     """BLE Device Connection Manager"""
     
     def __init__(self, transport_spec: str = "tcp-client:127.0.0.1:9001", interactive: bool = True):
+        ensure_user_files()
         self.transport_spec = transport_spec
         self.device = None
         self.connected_device = None
@@ -148,9 +150,7 @@ class BLEConnector:
         self.service_details = []
         self.interactive = interactive
         self.pairing_delegate = None
-        self._smp_config_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "configs", "smp_config.json")
-        )
+        self._smp_config_path = str(get_user_config_path("smp_config.json"))
         
         # SMP Configuration Parameters
         self.smp_config = {
@@ -557,7 +557,7 @@ class BLEConnector:
             peer_address: The bonded device address
         """
         try:
-            bonds_file = os.path.join(os.path.dirname(__file__), "..", "configs", "bumble_bonds.json")
+            bonds_file = str(get_user_config_path("bumble_bonds.json"))
             
             # Wait a moment for keystore to sync
             import time
@@ -609,7 +609,7 @@ class BLEConnector:
             True if device is bonded, False otherwise
         """
         try:
-            bonds_file = os.path.join(os.path.dirname(__file__), "..", "configs", "bumble_bonds.json")
+            bonds_file = str(get_user_config_path("bumble_bonds.json"))
             
             if not os.path.exists(bonds_file):
                 return False
@@ -640,10 +640,7 @@ class BLEConnector:
             Dictionary of bonded addresses and their info
         """
         try:
-            import os
-            
-            # Try to find bonds file in parent directory
-            bonds_file = os.path.join(os.path.dirname(__file__), "..", "configs", "bumble_bonds.json")
+            bonds_file = str(get_user_config_path("bumble_bonds.json"))
             
             if not os.path.exists(bonds_file):
                 logger.info("No bonding file found")
@@ -686,10 +683,7 @@ class BLEConnector:
             True if bonding deleted successfully
         """
         try:
-            import os
-            
-            # Find bonds file
-            bonds_file = os.path.join(os.path.dirname(__file__), "..", "configs", "bumble_bonds.json")
+            bonds_file = str(get_user_config_path("bumble_bonds.json"))
             
             if not os.path.exists(bonds_file):
                 logger.warning(f"Bonds file not found: {bonds_file}")
