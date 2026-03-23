@@ -330,6 +330,8 @@ class BLETestingMenu:
                   f"{'ENABLED' if config.get('auto_pair_encrypt_on_security_request', True) else 'DISABLED'}")
             print("  7. Auto Encrypt If Bonded: "
                 f"{'ENABLED' if config.get('auto_encrypt_if_bonded', True) else 'DISABLED'}")
+            print("  8. Auto Restore CCCD on Reconnect: "
+                f"{'ENABLED' if self.app.auto_restore_cccd_on_reconnect else 'DISABLED'}")
             print("  0. Back to Main Menu\n")
 
             choice = input("Select option: ").strip()
@@ -359,6 +361,9 @@ class BLETestingMenu:
             elif choice == "7":
                 enabled = self._prompt_yes_no("Enable auto encrypt if bonded? (Y/n): ", default=True)
                 await self.app.app_smp_auto_encrypt_if_bonded(enabled)
+            elif choice == "8":
+                enabled = self._prompt_yes_no("Enable auto restore CCCD on reconnect? (Y/n): ", default=True)
+                await self.app.app_auto_restore_cccd_on_reconnect(enabled)
             else:
                 print("Invalid option\n")
 

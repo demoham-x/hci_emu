@@ -89,6 +89,7 @@ Recommended pattern:
 | `snoop_auto_enable` | `bool` | Whether startup auto-enable is requested via config. |
 | `snoop_ellisys_enabled` | `bool` | Whether UDP Ellisys sink is enabled. |
 | `snoop_file_enabled` | `bool` | Whether capture file sink is enabled. |
+| `auto_restore_cccd_on_reconnect` | `bool` | Whether bonded reconnect should auto-discover services and restore persisted CCCD subscriptions. |
 
 Recommended pattern:
 - Use `app_toggle_hci_snoop(...)` and `app_debug_logging(...)` to update these consistently.
@@ -222,6 +223,7 @@ Schema:
     "filter_name": "BLE",
     "filter_address": "00:60:37",
     "debug_mode": "none",
+    "auto_restore_cccd_on_reconnect": true,
     "hci_snoop": {
         "enabled": false,
         "enable_ellisys": true,
@@ -237,6 +239,9 @@ Schema:
 
 Used by:
 - `_load_ui_config()` and `_save_ui_config()`.
+
+Behavior:
+- `auto_restore_cccd_on_reconnect`: If `true`, bonded reconnect flow performs encrypted reconnect recovery by discovering services and restoring persisted Notify/Indicate subscriptions.
 
 </details>
 
@@ -264,6 +269,9 @@ Schema:
 Behavior:
 - `auto_pair_encrypt_on_security_request`: Controls automatic pairing/encryption handling when a peer sends an SMP security request.
 - `auto_encrypt_if_bonded`: Controls automatic encryption attempt after connection when the peer is already bonded.
+
+Note:
+- CCCD subscription state is stored with bond data in `bumble_bonds.json` under internal key `_hciemu_cccd` for each peer entry.
 
 </details>
 
@@ -536,6 +544,19 @@ Enables/disables auto pair or encrypt behavior on security request.
 <summary><code>app_smp_auto_encrypt_if_bonded(enabled: bool)</code></summary>
 
 Enables/disables automatic encryption when connecting to an already bonded device.
+
+</details>
+
+<details>
+<summary><code>app_auto_restore_cccd_on_reconnect(enabled: bool)</code></summary>
+
+Enables/disables automatic CCCD restore after bonded reconnect.
+
+When enabled:
+- reconnect to bonded peer
+- establish encryption
+- discover services
+- restore persisted notification/indication subscriptions from bond data
 
 </details>
 

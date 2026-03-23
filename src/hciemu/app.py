@@ -53,6 +53,15 @@ else:
 from hciemu.scanner import BLEScanner
 from hciemu.connector import BLEConnector
 from hciemu.utils import print_section, format_address
+from hciemu.paths import (
+    ensure_user_files,
+    get_capture_log_path,
+    get_debug_log_path,
+    get_log_dir,
+    get_resource_dir,
+    get_user_config_path,
+    is_repo_checkout,
+)
 from bumble.keys import JsonKeyStore
 from hciemu.hci_snooper import HCISnooper, BumbleHCITransportWrapper
 
@@ -61,6 +70,7 @@ class BLETestingApp:
     """Application layer containing BLE operation logic."""
     
     def __init__(self, transport_spec: str = "tcp-client:127.0.0.1:9001"):
+        ensure_user_files()
         self.transport_spec = transport_spec
         self.scanner = BLEScanner(transport_spec)
         self.connector = BLEConnector(transport_spec)
@@ -75,9 +85,8 @@ class BLETestingApp:
         self.filter_name = None
         self.filter_address = None
         self._suppress_adv_printing = False  # Flag to suppress adv printing during connection
-        self._ui_config_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "configs", "ui_config.json")
-        )
+        self._ui_config_path = str(get_user_config_path("ui_config.json"))
+        self._debug_log_path = str(get_debug_log_path())
         
         # Debug logging configuration
         self.debug_mode = "none"  # none, console, file, both
@@ -88,12 +97,13 @@ class BLETestingApp:
         self.snoop_enabled = False
         self.ellisys_host = "127.0.0.1"
         self.ellisys_port = 24352
-        self.btsnoop_filename = "logs/hci_capture.log"  # .log or .btsnoop format
+        self.btsnoop_filename = str(get_capture_log_path())  # .log or .btsnoop format
         self.ellisys_stream = "primary"  # primary, secondary, or tertiary
         self.snoop_console_logging = False
         self.snoop_auto_enable = False
         self.snoop_ellisys_enabled = True
         self.snoop_file_enabled = True
+        self.auto_restore_cccd_on_reconnect = True
         self._connect_in_progress = False
         self._connect_target_address = None
         self._post_connect_task = None
@@ -103,8 +113,20 @@ class BLETestingApp:
         self._security_request_task = None
         self._pairing_task = None
         self._pairing_in_progress = False
+        self._print_active_paths()
         self._load_ui_config()
         self._configure_debug_logging(self.debug_mode, persist=False)
+
+    def _print_active_paths(self) -> None:
+        mode = "repo" if is_repo_checkout() else "installed-package"
+        print(f"[PATHS] Mode: {mode}")
+        print(f"[PATHS] UI config: {self._ui_config_path}")
+        print(f"[PATHS] SMP config: {get_user_config_path('smp_config.json')}")
+        print(f"[PATHS] Bonds file: {get_user_config_path('bumble_bonds.json')}")
+        print(f"[PATHS] Resources dir: {get_resource_dir()}")
+        print(f"[PATHS] Logs dir: {get_log_dir()}")
+        print(f"[PATHS] Debug log: {self._debug_log_path}")
+        print(f"[PATHS] HCI capture log: {self.btsnoop_filename}\n")
 
     def _load_ui_config(self):
         """Load UI/runtime configuration from disk."""
@@ -124,6 +146,13 @@ class BLETestingApp:
             debug_mode = config.get("debug_mode")
             if debug_mode in {"none", "console", "file", "both"}:
                 self.debug_mode = debug_mode
+
+            self.auto_restore_cccd_on_reconnect = bool(
+                config.get(
+                    "auto_restore_cccd_on_reconnect",
+                    self.auto_restore_cccd_on_reconnect,
+                )
+            )
 
             hci_snoop = config.get("hci_snoop", {})
             if isinstance(hci_snoop, dict):
@@ -167,6 +196,7 @@ class BLETestingApp:
                 "filter_name": self.filter_name,
                 "filter_address": self.filter_address,
                 "debug_mode": self.debug_mode,
+                "auto_restore_cccd_on_reconnect": self.auto_restore_cccd_on_reconnect,
                 "hci_snoop": {
                     "enabled": self.snoop_auto_enable,
                     "enable_ellisys": self.snoop_ellisys_enabled,
@@ -424,6 +454,17 @@ class BLETestingApp:
                     )
                     if encrypted:
                         print("[SECURITY] Encryption established\n")
+                        if self.auto_restore_cccd_on_reconnect:
+                            print("[CCCD] Auto-restore is enabled. Discovering services and restoring subscriptions...")
+                            try:
+                                await self.connector.discover_services(
+                                    force_fresh=True,
+                                    restore_persisted_cccd=True,
+                                )
+                                print("[CCCD] Auto-restore completed\n")
+                            except Exception as e:
+                                logger.warning(f"[CCCD] Auto-restore failed: {e}")
+                                print(f"[CCCD] Auto-restore failed: {e}\n")
                     else:
                         print("[SECURITY] Could not establish encryption automatically\n")
                 except asyncio.TimeoutError:
@@ -578,7 +619,7 @@ class BLETestingApp:
         return addresses
 
     def _load_resource_maps(self):
-        resource_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "resources"))
+        resource_dir = str(get_resource_dir())
         uuid_name_map = {}
         ad_type_name_map = {}
 
@@ -914,7 +955,7 @@ class BLETestingApp:
             if btsnoop_filename:
                 self.btsnoop_filename = btsnoop_filename
             elif not self.btsnoop_filename.endswith((".log", ".btsnoop")):
-                self.btsnoop_filename = "logs/hci_capture.log"
+                self.btsnoop_filename = str(get_capture_log_path())
 
             if enable_ellisys is not None:
                 self.snoop_ellisys_enabled = bool(enable_ellisys)
@@ -1036,10 +1077,10 @@ class BLETestingApp:
             print("\n✓ Debug logging enabled: Console only\n")
         elif mode == "file":
             self._configure_debug_logging("file")
-            print("\n✓ Debug logging enabled: File only (logs/debug.log)\n")
+            print(f"\n✓ Debug logging enabled: File only ({self._debug_log_path})\n")
         elif mode == "both":
             self._configure_debug_logging("both")
-            print("\n✓ Debug logging enabled: Console AND File (logs/debug.log)\n")
+            print(f"\n✓ Debug logging enabled: Console AND File ({self._debug_log_path})\n")
         elif mode == "none":
             self._configure_debug_logging("none")
             print("\n✓ Debug logging disabled (required prints only)\n")
@@ -1087,8 +1128,8 @@ class BLETestingApp:
             
             # Create file handler
             try:
-                os.makedirs("logs", exist_ok=True)
-                self.debug_file_handler = logging.FileHandler("logs/debug.log", encoding='utf-8')
+                os.makedirs(os.path.dirname(self._debug_log_path), exist_ok=True)
+                self.debug_file_handler = logging.FileHandler(self._debug_log_path, encoding='utf-8')
                 self.debug_file_handler.setLevel(logging.DEBUG)
                 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
                 self.debug_file_handler.setFormatter(formatter)
@@ -1107,8 +1148,8 @@ class BLETestingApp:
             
             # Create file handler
             try:
-                os.makedirs("logs", exist_ok=True)
-                self.debug_file_handler = logging.FileHandler("logs/debug.log", encoding='utf-8')
+                os.makedirs(os.path.dirname(self._debug_log_path), exist_ok=True)
+                self.debug_file_handler = logging.FileHandler(self._debug_log_path, encoding='utf-8')
                 self.debug_file_handler.setLevel(logging.DEBUG)
                 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
                 self.debug_file_handler.setFormatter(formatter)
@@ -1153,7 +1194,7 @@ class BLETestingApp:
         )
 
         # Enable persistent bonding BEFORE pairing setup
-        bonds_file = os.path.join(os.path.dirname(__file__), "..", "configs", "bumble_bonds.json")
+        bonds_file = str(get_user_config_path("bumble_bonds.json"))
         try:
             self._scan_device.keystore = JsonKeyStore(namespace=None, filename=bonds_file)
             logger.info(f"✓ Bumble JsonKeyStore enabled (file: {bonds_file})")
@@ -2054,6 +2095,10 @@ class BLETestingApp:
             "  Auto Encrypt If Bonded: "
             f"{'ENABLED' if config.get('auto_encrypt_if_bonded', True) else 'DISABLED'}"
         )
+        print(
+            "  Auto Restore CCCD on Reconnect: "
+            f"{'ENABLED' if self.auto_restore_cccd_on_reconnect else 'DISABLED'}"
+        )
         print()
 
     async def app_smp_auto_pair_encrypt(self, enabled: bool):
@@ -2093,6 +2138,21 @@ class BLETestingApp:
             print("✓ Auto encrypt if bonded enabled\n")
         else:
             print("✓ Auto encrypt if bonded disabled\n")
+
+    async def app_auto_restore_cccd_on_reconnect(self, enabled: bool):
+        """Toggle automatic CCCD restoration for bonded reconnects."""
+        print_section("Auto Restore CCCD on Reconnect")
+
+        print(
+            f"Current: {'ENABLED' if self.auto_restore_cccd_on_reconnect else 'DISABLED'}"
+        )
+
+        self.auto_restore_cccd_on_reconnect = bool(enabled)
+        self._save_ui_config()
+        if enabled:
+            print("✓ Auto CCCD restore on reconnect enabled\n")
+        else:
+            print("✓ Auto CCCD restore on reconnect disabled\n")
 
     async def app_smp_io_capability(self, io_capability: str):
         """Configure SMP IO Capability without interactive prompts.

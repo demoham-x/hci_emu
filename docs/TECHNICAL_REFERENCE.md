@@ -317,6 +317,32 @@ Keys stored in `configs/bumble_bonds.json`:
 }
 ```
 
+### Persistent CCCD Subscription Storage
+
+The app stores persistent CCCD subscription preferences in the same bond file,
+alongside peer key material, under an internal key:
+
+```json
+{
+    "<local_address>": {
+        "<peer_address>": {
+            "ltk": { "value": "..." },
+            "irk": { "value": "..." },
+            "_hciemu_cccd": {
+                "88": "notify",
+                "93": "indicate"
+            }
+        }
+    }
+}
+```
+
+Restore behavior is controlled by `auto_restore_cccd_on_reconnect` in
+`ui_config.json`:
+
+- `true`: after bonded reconnect and successful encryption, the app discovers services and restores saved CCCD subscriptions.
+- `false`: no automatic restore; user subscribes manually.
+
 ### Key Types
 
 | Key | Purpose | Size |
