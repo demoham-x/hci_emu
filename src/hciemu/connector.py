@@ -177,6 +177,113 @@ class BLEConnector:
         self._csv_file = None
         self._csv_writer = None
         self._csv_filename = None
+        self._cccd_state_key = "_hciemu_cccd"
+
+    def _bonds_file_path(self) -> str:
+        return str(get_user_config_path("bumble_bonds.json"))
+
+    def _load_bonds_data(self) -> Dict:
+        bonds_file = self._bonds_file_path()
+        if not os.path.exists(bonds_file):
+            return {}
+
+        try:
+            with open(bonds_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning(f"Could not load bonds data: {e}")
+            return {}
+
+    def _save_bonds_data(self, bonds_data: Dict) -> bool:
+        bonds_file = self._bonds_file_path()
+        try:
+            with open(bonds_file, "w", encoding="utf-8") as handle:
+                json.dump(bonds_data, handle, indent=2)
+                handle.write("\n")
+            return True
+        except Exception as e:
+            logger.warning(f"Could not save bonds data: {e}")
+            return False
+
+    def _find_peer_bond_entry(self, bonds_data: Dict, peer_address: str):
+        for _local_addr, peers in bonds_data.items():
+            if isinstance(peers, dict) and peer_address in peers and isinstance(peers[peer_address], dict):
+                return peers[peer_address]
+        return None
+
+    def _record_cccd_preference(self, handle: int, mode: str) -> None:
+        if not self.connected_device:
+            return
+
+        try:
+            peer_address = str(self.connected_device.peer_address)
+            bonds_data = self._load_bonds_data()
+            peer_entry = self._find_peer_bond_entry(bonds_data, peer_address)
+            if not peer_entry:
+                logger.debug(f"[CCCD] No bonded entry yet for {peer_address}; skipping CCCD persistence")
+                return
+
+            cccd_map = peer_entry.get(self._cccd_state_key)
+            if not isinstance(cccd_map, dict):
+                cccd_map = {}
+                peer_entry[self._cccd_state_key] = cccd_map
+
+            cccd_map[str(handle)] = mode
+            if self._save_bonds_data(bonds_data):
+                logger.info(f"[CCCD] Persisted {mode} subscription for handle 0x{handle:04X} ({handle})")
+        except Exception as e:
+            logger.debug(f"[CCCD] Failed to persist CCCD preference: {e}")
+
+    def _get_persisted_cccd_preferences(self) -> Dict[int, str]:
+        if not self.connected_device:
+            return {}
+
+        try:
+            peer_address = str(self.connected_device.peer_address)
+            bonds_data = self._load_bonds_data()
+            peer_entry = self._find_peer_bond_entry(bonds_data, peer_address)
+            if not peer_entry:
+                return {}
+
+            cccd_map = peer_entry.get(self._cccd_state_key)
+            if not isinstance(cccd_map, dict):
+                return {}
+
+            parsed = {}
+            for handle_str, mode in cccd_map.items():
+                if mode not in {"notify", "indicate"}:
+                    continue
+                try:
+                    parsed[int(handle_str)] = mode
+                except (TypeError, ValueError):
+                    continue
+            return parsed
+        except Exception as e:
+            logger.debug(f"[CCCD] Failed to load CCCD preferences: {e}")
+            return {}
+
+    async def _restore_persisted_cccd_preferences(self) -> None:
+        prefs = self._get_persisted_cccd_preferences()
+        if not prefs:
+            return
+
+        restored = 0
+        for handle, mode in prefs.items():
+            if handle not in self.characteristics:
+                continue
+
+            ok = False
+            if mode == "notify":
+                ok = await self.subscribe_notifications(handle)
+            elif mode == "indicate":
+                ok = await self.subscribe_indications(handle)
+
+            if ok:
+                restored += 1
+
+        if restored:
+            logger.info(f"[CCCD] Restored {restored} persisted subscription(s)")
 
     def _load_smp_config(self):
         """Load SMP configuration from disk; keep defaults on any error."""
@@ -557,7 +664,7 @@ class BLEConnector:
             peer_address: The bonded device address
         """
         try:
-            bonds_file = str(get_user_config_path("bumble_bonds.json"))
+            bonds_file = self._bonds_file_path()
             
             # Wait a moment for keystore to sync
             import time
@@ -609,7 +716,7 @@ class BLEConnector:
             True if device is bonded, False otherwise
         """
         try:
-            bonds_file = str(get_user_config_path("bumble_bonds.json"))
+            bonds_file = self._bonds_file_path()
             
             if not os.path.exists(bonds_file):
                 return False
@@ -640,7 +747,7 @@ class BLEConnector:
             Dictionary of bonded addresses and their info
         """
         try:
-            bonds_file = str(get_user_config_path("bumble_bonds.json"))
+            bonds_file = self._bonds_file_path()
             
             if not os.path.exists(bonds_file):
                 logger.info("No bonding file found")
@@ -683,7 +790,7 @@ class BLEConnector:
             True if bonding deleted successfully
         """
         try:
-            bonds_file = str(get_user_config_path("bumble_bonds.json"))
+            bonds_file = self._bonds_file_path()
             
             if not os.path.exists(bonds_file):
                 logger.warning(f"Bonds file not found: {bonds_file}")
@@ -721,12 +828,14 @@ class BLEConnector:
             logger.error(f"Failed to delete bonding: {e}", exc_info=True)
             return False
     
-    async def discover_services(self, force_fresh: bool = False) -> Dict:
+    async def discover_services(self, force_fresh: bool = False, restore_persisted_cccd: bool = False) -> Dict:
         """
         Discover GATT services
         
         Args:
             force_fresh: If True, bypass cache and do a fresh discovery
+            restore_persisted_cccd: If True, restore persisted notification/indication
+                subscriptions after discovery completes
         
         Returns:
             Dictionary of services and characteristics
@@ -815,6 +924,8 @@ class BLEConnector:
             self.services = services
             self.characteristics = characteristics
             self.service_details = service_details
+            if restore_persisted_cccd:
+                await self._restore_persisted_cccd_preferences()
 
             return services
             
@@ -989,6 +1100,7 @@ class BLEConnector:
             # Subscribe using the proxy (prefer_notify=True means notifications)
             await self.gatt_client.subscribe(char_proxy, notification_handler, prefer_notify=True)
             logger.info("Notification subscription successful")
+            self._record_cccd_preference(handle, "notify")
             return True
             
         except att.ATT_Error as e:
@@ -1045,6 +1157,7 @@ class BLEConnector:
             # Subscribe using the proxy (prefer_notify=False means indications)
             await self.gatt_client.subscribe(char_proxy, indication_handler, prefer_notify=False)
             logger.info("Indication subscription successful")
+            self._record_cccd_preference(handle, "indicate")
             return True
             
         except att.ATT_Error as e:

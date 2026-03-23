@@ -2,6 +2,7 @@
     "filter_name": null,
     "filter_address": null,
     "debug_mode": "none",
+  "auto_restore_cccd_on_reconnect": true,
     "hci_snoop": {
         "enabled": true,
         "enable_ellisys": true,

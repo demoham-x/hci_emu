@@ -103,6 +103,7 @@ class BLETestingApp:
         self.snoop_auto_enable = False
         self.snoop_ellisys_enabled = True
         self.snoop_file_enabled = True
+        self.auto_restore_cccd_on_reconnect = True
         self._connect_in_progress = False
         self._connect_target_address = None
         self._post_connect_task = None
@@ -146,6 +147,13 @@ class BLETestingApp:
             if debug_mode in {"none", "console", "file", "both"}:
                 self.debug_mode = debug_mode
 
+            self.auto_restore_cccd_on_reconnect = bool(
+                config.get(
+                    "auto_restore_cccd_on_reconnect",
+                    self.auto_restore_cccd_on_reconnect,
+                )
+            )
+
             hci_snoop = config.get("hci_snoop", {})
             if isinstance(hci_snoop, dict):
                 if isinstance(hci_snoop.get("ellisys_host"), str):
@@ -188,6 +196,7 @@ class BLETestingApp:
                 "filter_name": self.filter_name,
                 "filter_address": self.filter_address,
                 "debug_mode": self.debug_mode,
+                "auto_restore_cccd_on_reconnect": self.auto_restore_cccd_on_reconnect,
                 "hci_snoop": {
                     "enabled": self.snoop_auto_enable,
                     "enable_ellisys": self.snoop_ellisys_enabled,
@@ -445,6 +454,17 @@ class BLETestingApp:
                     )
                     if encrypted:
                         print("[SECURITY] Encryption established\n")
+                        if self.auto_restore_cccd_on_reconnect:
+                            print("[CCCD] Auto-restore is enabled. Discovering services and restoring subscriptions...")
+                            try:
+                                await self.connector.discover_services(
+                                    force_fresh=True,
+                                    restore_persisted_cccd=True,
+                                )
+                                print("[CCCD] Auto-restore completed\n")
+                            except Exception as e:
+                                logger.warning(f"[CCCD] Auto-restore failed: {e}")
+                                print(f"[CCCD] Auto-restore failed: {e}\n")
                     else:
                         print("[SECURITY] Could not establish encryption automatically\n")
                 except asyncio.TimeoutError:
@@ -2075,6 +2095,10 @@ class BLETestingApp:
             "  Auto Encrypt If Bonded: "
             f"{'ENABLED' if config.get('auto_encrypt_if_bonded', True) else 'DISABLED'}"
         )
+        print(
+            "  Auto Restore CCCD on Reconnect: "
+            f"{'ENABLED' if self.auto_restore_cccd_on_reconnect else 'DISABLED'}"
+        )
         print()
 
     async def app_smp_auto_pair_encrypt(self, enabled: bool):
@@ -2114,6 +2138,21 @@ class BLETestingApp:
             print("✓ Auto encrypt if bonded enabled\n")
         else:
             print("✓ Auto encrypt if bonded disabled\n")
+
+    async def app_auto_restore_cccd_on_reconnect(self, enabled: bool):
+        """Toggle automatic CCCD restoration for bonded reconnects."""
+        print_section("Auto Restore CCCD on Reconnect")
+
+        print(
+            f"Current: {'ENABLED' if self.auto_restore_cccd_on_reconnect else 'DISABLED'}"
+        )
+
+        self.auto_restore_cccd_on_reconnect = bool(enabled)
+        self._save_ui_config()
+        if enabled:
+            print("✓ Auto CCCD restore on reconnect enabled\n")
+        else:
+            print("✓ Auto CCCD restore on reconnect disabled\n")
 
     async def app_smp_io_capability(self, io_capability: str):
         """Configure SMP IO Capability without interactive prompts.
