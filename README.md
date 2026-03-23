@@ -20,6 +20,21 @@ Choose one workflow:
 
 If you install the package (for example `pip install HCIEMU`), these commands are available:
 
+Install method recommendation:
+
+- Use `pip` inside a virtual environment for project development and reproducible dependencies.
+- Use `pipx` for global command-line usage (`HCI`, `BRIDGE`) without polluting system Python.
+
+Examples:
+
+```powershell
+# Inside an active venv
+pip install HCIEMU
+
+# Global CLI install (isolated)
+pipx install HCIEMU
+```
+
 - `HCI` - Launch the interactive menu app.
 - `BRIDGE` - Launch bridge with defaults (`usb:0` -> `tcp-server:127.0.0.1:9001`).
 - `BRIDGE <source> <target>` - Launch bridge with custom endpoints.
