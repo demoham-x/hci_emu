@@ -40,8 +40,5 @@ BRIDGE = "hciemu.main:run_bridge_cli"
 [tool.setuptools]
 script-files = ["HCI.bat", "BRIDGE.bat"]
 
-[tool.setuptools.package-data]
-hciemu = ["configs/*.json", "resources/*.json", "resources/*.yaml"]
-
 [tool.setuptools.packages.find]
 where = ["src"]

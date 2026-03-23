@@ -21,7 +21,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
-from hciemu.paths import get_user_data_dir
+from hciemu.paths import get_log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class HCISnooper:
         self.ellisys_port = ellisys_port
         self.btsnoop_file = btsnoop_file
         self.enable_ellisys = enable_ellisys
-        self.project_root = get_user_data_dir()
+        self.project_root = get_log_dir().parent
         self.enable_console = enable_console
         self.stream_name = stream.lower()
         
