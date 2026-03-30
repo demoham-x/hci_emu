@@ -75,6 +75,7 @@ class BLETestingMenu:
             ("16", "Stop Burst Read"),
             ("17", "Start CSV Logging"),
             ("18", "Stop CSV Logging"),
+            ("19", "Exchange GATT MTU"),
             ("0", "Exit"),
         ]
 
@@ -316,6 +317,11 @@ class BLETestingMenu:
         filename = input("CSV filename (default: notifications_TIMESTAMP.csv): ").strip() or None
         await self.app.app_start_csv_logging(filename=filename)
 
+    async def menu_exchange_mtu(self):
+        print_section("Exchange GATT MTU")
+        mtu_size = self._prompt_int("Requested ATT MTU (23-517, default 247): ", default=247)
+        await self.app.app_exchange_mtu(mtu_size=mtu_size)
+
     async def menu_smp_settings(self):
         while True:
             print_section("SMP (Secure Manager Protocol) Settings")
@@ -452,6 +458,8 @@ class BLETestingMenu:
                     await self.menu_start_csv_logging()
                 elif choice == "18":
                     await self.app.app_stop_csv_logging()
+                elif choice == "19":
+                    await self.menu_exchange_mtu()
                 elif choice == "0":
                     print("\nExiting...")
                     break
