@@ -266,12 +266,18 @@ class BLETestingApp:
     def _register_connection_events(self, connection):
         """Register all connection-level events in one place."""
 
+        # Cache and print the starting ATT MTU as soon as the link is ready.
+        initial_mtu = self.connector.sync_connection_mtu(connection)
+        print(f"[MTU] ATT MTU {initial_mtu}")
+        logger.info(f"[MTU] ATT MTU {initial_mtu}")
+
         def on_disconnection(reason):
             logger.info(f"[DISCONNECTION] Remote device disconnected, reason: {reason}")
             print(f"\n[DISCONNECTION] Remote device disconnected (reason: {reason})")
             self.connected = False
             self.current_device = None
             self.connector.connected_device = None
+            self.connector.reset_connection_mtu_state()
 
         custom_handlers = {
             "disconnection": on_disconnection,
@@ -279,6 +285,7 @@ class BLETestingApp:
             "connection_encryption_failure": self._on_connection_encryption_failure,
             "connection_encryption_key_refresh": self._on_connection_encryption_key_refresh,
             "connection_parameters_update": self._on_connection_parameters_update,
+            "connection_att_mtu_update": self._on_mtu_update_response,
             "pairing_start": self._on_pairing_start,
             "pairing": self._on_pairing_complete,
             "pairing_failure": self._on_pairing_failure,
@@ -332,6 +339,12 @@ class BLETestingApp:
         self._pairing_in_progress = False
         logger.warning(f"[PAIRING EVENT] pairing_failure: {args!r}")
         print("[PAIRING] Failed")
+    
+    def _on_mtu_update_response(self, *args):
+        """Handle LE MTU update response event."""
+        mtu = self.connector.on_connection_att_mtu_update(*args)
+        logger.info(f"[MTU UPDATE RESPONSE] args={args!r}, mtu={mtu}")
+        print(f"[MTU] Updated ATT MTU {mtu}")
 
     def _start_pairing_non_blocking(self, connection, source: str):
         """Start pairing without blocking; completion is tracked by LE events."""
@@ -2303,6 +2316,43 @@ class BLETestingApp:
             except Exception as e:
                 logger.error(f"Pairing error: {e}")
                 print(f"✗ Pairing error: {e}\n")
+
+    async def app_exchange_mtu(self, mtu_size: int = 247):
+        """Exchange ATT MTU with connected peer using event-driven completion."""
+        if not self.connected or not self.connector.connected_device:
+            print("✗ Not connected to any device\n")
+            return
+
+        try:
+            requested_mtu = int(mtu_size)
+        except (TypeError, ValueError):
+            print("✗ Invalid MTU value\n")
+            return
+
+        if requested_mtu < 23 or requested_mtu > 517:
+            print("✗ MTU must be between 23 and 517\n")
+            return
+
+        connection = self.connector.connected_device
+        current_mtu = self.connector.sync_connection_mtu(connection)
+
+        print(f"Connection: {connection.peer_address}")
+        print(f"Current ATT MTU: {current_mtu}")
+        print(f"Requested ATT MTU: {requested_mtu}\n")
+
+        try:
+            # Do not wait for MTU callback completion; just dispatch request now.
+            # This keeps behavior async while ensuring request runs before menu input
+            # blocks the event loop again.
+            print("✓ MTU exchange request sent. Waiting for MTU update event...\n")
+            await self.connector.exchange_att_mtu(mtu_size=requested_mtu)
+        except ValueError as e:
+            print(f"✗ {e}\n")
+        except RuntimeError as e:
+            print(f"✗ {e}\n")
+        except Exception as e:
+            logger.error(f"MTU exchange error: {e}", exc_info=True)
+            print(f"✗ MTU exchange failed: {e}\n")
     
     async def app_unpair(
         self,
@@ -2433,6 +2483,8 @@ class BLETestingApp:
                         await self.app_start_csv_logging()
                     elif choice == "18":
                         await self.app_stop_csv_logging()
+                    elif choice == "19":
+                        print("Use app_exchange_mtu(mtu_size=...) directly in non-interactive mode\n")
                     elif choice == "0":
                         print("\nExiting...")
                         break
