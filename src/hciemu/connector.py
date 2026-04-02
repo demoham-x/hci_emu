@@ -179,6 +179,62 @@ class BLEConnector:
         self._csv_filename = None
         self._cccd_state_key = "_hciemu_cccd"
 
+        # ATT MTU state for the active connection.
+        self.current_att_mtu = 23
+
+    def get_connection_att_mtu(self, connection=None) -> int:
+        """Read ATT MTU from active connection/client with default fallback."""
+        connection = connection or self.connected_device
+        for source in (connection, getattr(connection, "gatt_client", None) if connection else None):
+            if source is None:
+                continue
+            mtu = getattr(source, "att_mtu", None)
+            if isinstance(mtu, int):
+                return mtu
+            mtu = getattr(source, "mtu", None)
+            if isinstance(mtu, int):
+                return mtu
+        return 23
+
+    def sync_connection_mtu(self, connection=None) -> int:
+        """Refresh and return current ATT MTU from the active connection."""
+        self.current_att_mtu = self.get_connection_att_mtu(connection)
+        return self.current_att_mtu
+
+    def on_connection_att_mtu_update(self, *args) -> int:
+        """Update cached ATT MTU from the active connection state."""
+        # Bumble emits this event without MTU args, so read negotiated MTU from
+        # the active connection state.
+        mtu = self.get_connection_att_mtu()
+
+        self.current_att_mtu = mtu
+
+        return mtu
+
+    def reset_connection_mtu_state(self) -> None:
+        """Reset MTU cache/waiter when connection is closed or replaced."""
+        self.current_att_mtu = 23
+
+    async def exchange_att_mtu(self, mtu_size: int = 247) -> None:
+        """Request ATT MTU exchange and return immediately after request call."""
+        if not self.connected_device:
+            raise RuntimeError("Not connected to any device")
+
+        requested_mtu = int(mtu_size)
+        if requested_mtu < 23 or requested_mtu > 517:
+            raise ValueError("MTU must be between 23 and 517")
+
+        connection = self.connected_device
+        self.current_att_mtu = self.get_connection_att_mtu(connection)
+
+        # Use Bumble's explicit Peer.request_mtu API for ATT MTU exchange.
+        from bumble.device import Peer
+
+        peer = Peer(connection)
+        await peer.request_mtu(requested_mtu)
+
+        logger.info(f"[MTU] Requested ATT MTU exchange: {requested_mtu}")
+
     def _bonds_file_path(self) -> str:
         return str(get_user_config_path("bumble_bonds.json"))
 
