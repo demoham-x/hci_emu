@@ -10,7 +10,7 @@ import sys
 import os
 import csv
 from datetime import datetime
-from typing import Optional, List, Dict, Callable
+from typing import Optional, List, Dict, Callable, Any
 from bumble.keys import JsonKeyStore
 from bumble import att
 from hciemu.paths import ensure_user_files, get_user_config_path
@@ -181,6 +181,266 @@ class BLEConnector:
 
         # ATT MTU state for the active connection.
         self.current_att_mtu = 23
+
+        # L2CAP CoC/ECOC channel tracking.
+        self._l2cap_channels: Dict[int, Any] = {}
+        self._l2cap_servers: Dict[int, Any] = {}
+        self._l2cap_event_callback: Optional[Callable[[str, Any, Any], None]] = None
+
+    def set_l2cap_event_callback(self, callback: Optional[Callable[[str, Any, Any], None]]) -> None:
+        """Register callback invoked on L2CAP channel lifecycle and data events."""
+        self._l2cap_event_callback = callback
+
+    def _emit_l2cap_event(self, event_name: str, channel: Any, payload: Any = None) -> None:
+        if not self._l2cap_event_callback:
+            return
+        try:
+            self._l2cap_event_callback(event_name, channel, payload)
+        except Exception as exc:
+            logger.debug(f"[L2CAP] event callback error: {exc}")
+
+    def _get_l2cap_manager(self):
+        if not self.device:
+            raise RuntimeError("Device is not initialized")
+        manager = getattr(self.device, "l2cap_channel_manager", None)
+        if not manager:
+            raise RuntimeError("L2CAP channel manager is not available")
+        return manager
+
+    def _register_l2cap_channel(self, channel: Any, channel_type: str) -> None:
+        source_cid = getattr(channel, "source_cid", None)
+        if source_cid is None:
+            raise RuntimeError("L2CAP channel does not expose source_cid")
+
+        self._l2cap_channels[int(source_cid)] = channel
+
+        def _on_open():
+            self._emit_l2cap_event("open", channel, {"type": channel_type})
+
+        def _on_close():
+            self._l2cap_channels.pop(int(source_cid), None)
+            self._emit_l2cap_event("close", channel, {"type": channel_type})
+
+        def _on_att_mtu_update(mtu: int):
+            self._emit_l2cap_event("att_mtu_update", channel, {"mtu": mtu, "type": channel_type})
+
+        def _on_data(data: bytes):
+            self._emit_l2cap_event("data", channel, data)
+
+        # Bumble updates channel credits via on_credits(...) without emitting an
+        # EventEmitter event, so we wrap that method to surface credit updates.
+        original_on_credits = getattr(channel, "on_credits", None)
+
+        def _on_credits(credits: int):
+            if callable(original_on_credits):
+                original_on_credits(credits)
+            self._emit_l2cap_event(
+                "credits",
+                channel,
+                {
+                    "delta": int(credits),
+                    "total": getattr(channel, "credits", None),
+                    "type": channel_type,
+                },
+            )
+
+        if callable(original_on_credits):
+            setattr(channel, "on_credits", _on_credits)
+
+        channel.on("open", _on_open)
+        channel.on("close", _on_close)
+        channel.on("att_mtu_update", _on_att_mtu_update)
+        channel.sink = _on_data
+
+        # Channel may already be connected when registered.
+        self._emit_l2cap_event("open", channel, {"type": channel_type})
+
+    def get_open_l2cap_channels(self) -> List[Dict[str, Any]]:
+        """Return open L2CAP channels with CBFC/ECBFC details."""
+        channels: List[Dict[str, Any]] = []
+        for source_cid, channel in sorted(self._l2cap_channels.items()):
+            channels.append(
+                {
+                    "source_cid": source_cid,
+                    "destination_cid": getattr(channel, "destination_cid", None),
+                    "psm": getattr(channel, "psm", None),
+                    "mtu": getattr(channel, "mtu", None),
+                    "peer_mtu": getattr(channel, "peer_mtu", None),
+                    "mps": getattr(channel, "mps", None),
+                    "peer_mps": getattr(channel, "peer_mps", None),
+                    "credits_ours": getattr(channel, "credits", None),
+                    "credits_peer": getattr(channel, "peer_credits", None),
+                    "state": getattr(getattr(channel, "state", None), "name", str(getattr(channel, "state", None))),
+                }
+            )
+        return channels
+
+    def list_l2cap_servers(self) -> List[Dict[str, Any]]:
+        """Return active LE CoC servers registered by this connector."""
+        servers: List[Dict[str, Any]] = []
+        for psm in sorted(self._l2cap_servers.keys()):
+            servers.append({"psm": psm})
+        return servers
+
+    def _require_l2cap_channel(self, source_cid: int):
+        channel = self._l2cap_channels.get(int(source_cid))
+        if not channel:
+            raise RuntimeError(f"No L2CAP channel found with source CID {source_cid}")
+        return channel
+
+    async def start_l2cap_cbfc_server(
+        self,
+        psm: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ) -> Dict[str, Any]:
+        """Register LE CoC server to accept inbound CBFC requests on a PSM."""
+        if not self.device:
+            raise RuntimeError("Bluetooth device is not initialized")
+
+        if int(psm) in self._l2cap_servers:
+            raise RuntimeError(f"L2CAP server already active on PSM {psm}")
+
+        from bumble import l2cap
+
+        spec = l2cap.LeCreditBasedChannelSpec(
+            psm=int(psm),
+            mtu=int(mtu),
+            mps=int(mps),
+            max_credits=int(max_credits),
+        )
+
+        def _on_channel(channel: Any):
+            self._register_l2cap_channel(channel, channel_type="cbfc-server")
+
+        server = self.device.create_l2cap_server(spec=spec, handler=_on_channel)
+        self._l2cap_servers[int(psm)] = server
+        return {"psm": int(psm)}
+
+    def stop_l2cap_cbfc_server(self, psm: int) -> bool:
+        """Stop LE CoC server on a given PSM."""
+        server = self._l2cap_servers.pop(int(psm), None)
+        if not server:
+            return False
+        try:
+            server.close()
+        except Exception as exc:
+            logger.debug(f"[L2CAP] server close failed for PSM {psm}: {exc}")
+        return True
+
+    async def create_l2cap_cbfc_channel(
+        self,
+        psm: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ) -> Dict[str, Any]:
+        """Create one LE Credit-Based Flow Control channel (CBFC)."""
+        if not self.connected_device:
+            raise RuntimeError("Not connected to any device")
+
+        from bumble import l2cap
+
+        spec = l2cap.LeCreditBasedChannelSpec(
+            psm=int(psm),
+            mtu=int(mtu),
+            mps=int(mps),
+            max_credits=int(max_credits),
+        )
+        channel = await self.connected_device.create_l2cap_channel(spec=spec)
+        self._register_l2cap_channel(channel, channel_type="cbfc")
+        return {
+            "source_cid": int(channel.source_cid),
+            "destination_cid": int(channel.destination_cid),
+            "psm": int(channel.psm),
+        }
+
+    async def create_l2cap_ecbfc_channels(
+        self,
+        psm: int,
+        count: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ) -> List[Dict[str, Any]]:
+        """Create Enhanced Credit-Based channels (ECBFC) as a channel set."""
+        if not self.connected_device:
+            raise RuntimeError("Not connected to any device")
+
+        from bumble import l2cap
+
+        manager = self._get_l2cap_manager()
+        spec = l2cap.LeCreditBasedChannelSpec(
+            psm=int(psm),
+            mtu=int(mtu),
+            mps=int(mps),
+            max_credits=int(max_credits),
+        )
+        channels = await manager.create_enhanced_credit_based_channels(
+            connection=self.connected_device,
+            spec=spec,
+            count=int(count),
+        )
+
+        created = []
+        for channel in channels:
+            self._register_l2cap_channel(channel, channel_type="ecbfc")
+            created.append(
+                {
+                    "source_cid": int(channel.source_cid),
+                    "destination_cid": int(channel.destination_cid),
+                    "psm": int(channel.psm),
+                }
+            )
+        return created
+
+    async def disconnect_l2cap_channel(self, source_cid: int) -> None:
+        """Disconnect a tracked L2CAP channel by local source CID."""
+        channel = self._require_l2cap_channel(int(source_cid))
+        await channel.disconnect()
+
+    def send_l2cap_data(self, source_cid: int, data: bytes) -> None:
+        """Queue payload for transmission on a connected L2CAP channel."""
+        channel = self._require_l2cap_channel(int(source_cid))
+        channel.write(data)
+
+    async def drain_l2cap_channel(self, source_cid: int) -> None:
+        """Wait for queued channel payload to drain."""
+        channel = self._require_l2cap_channel(int(source_cid))
+        await channel.drain()
+
+    def send_l2cap_credits(self, source_cid: int, credits: int) -> None:
+        """Send LE flow-control credits to peer for one channel."""
+        if credits <= 0:
+            raise ValueError("Credits must be > 0")
+
+        from bumble import l2cap
+
+        channel = self._require_l2cap_channel(int(source_cid))
+        manager = self._get_l2cap_manager()
+        manager.send_control_frame(
+            channel.connection,
+            l2cap.L2CAP_LE_SIGNALING_CID,
+            l2cap.L2CAP_LE_Flow_Control_Credit(
+                identifier=manager.next_identifier(channel.connection),
+                cid=channel.source_cid,
+                credits=int(credits),
+            ),
+        )
+
+    async def reconfigure_l2cap_ecbfc_channels(
+        self,
+        source_cids: List[int],
+        mtu: int,
+        mps: int,
+    ) -> bool:
+        """Reconfigure enhanced credit-based channel set when supported by Bumble API."""
+        del source_cids, mtu, mps
+
+        # Bumble in this workspace exposes ECBFC channel creation but does not
+        # expose public request/response handlers for L2CAP reconfigure.
+        return False
 
     def get_connection_att_mtu(self, connection=None) -> int:
         """Read ATT MTU from active connection/client with default fallback."""

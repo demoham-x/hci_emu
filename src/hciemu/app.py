@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Optional
+from typing import Optional, List
 import os
 
 try:
@@ -74,6 +74,7 @@ class BLETestingApp:
         self.transport_spec = transport_spec
         self.scanner = BLEScanner(transport_spec)
         self.connector = BLEConnector(transport_spec)
+        self.connector.set_l2cap_event_callback(self._on_l2cap_event)
         self.discovered_devices = {}
         self.connected = False
         self.current_device = None
@@ -103,6 +104,14 @@ class BLETestingApp:
         self.snoop_auto_enable = False
         self.snoop_ellisys_enabled = True
         self.snoop_file_enabled = True
+        self.adv_interval_min_ms = 100.0
+        self.adv_interval_max_ms = 120.0
+        self.adv_connectable = True
+        self.adv_data_hex = "020106"
+        self.adv_scan_response_hex = ""
+        self.adv_name_enabled = True
+        self.adv_custom_name = None
+        self.advertising = False
         self.auto_restore_cccd_on_reconnect = True
         self._connect_in_progress = False
         self._connect_target_address = None
@@ -234,10 +243,14 @@ class BLETestingApp:
             self.current_device = str(connection.peer_address)
             logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
             print(f"\n[CONNECTION] Established to {connection.peer_address}")
-            if self._connect_in_progress:
-                self._post_connect_task = asyncio.create_task(
-                    self._handle_connection_ready(connection)
-                )
+            # Run post-connection setup for both outbound (menu connect) and
+            # inbound (peer connects while we advertise) links so connection
+            # lifecycle events like disconnection are always registered.
+            if self._post_connect_task and not self._post_connect_task.done():
+                self._post_connect_task.cancel()
+            self._post_connect_task = asyncio.create_task(
+                self._handle_connection_ready(connection)
+            )
 
         def on_connection_failure(error):
             self.connected = False
@@ -339,6 +352,64 @@ class BLETestingApp:
         self._pairing_in_progress = False
         logger.warning(f"[PAIRING EVENT] pairing_failure: {args!r}")
         print("[PAIRING] Failed")
+
+    def _on_l2cap_event(self, event_name: str, channel, payload):
+        """Handle asynchronous L2CAP channel lifecycle and data events."""
+        source_cid = getattr(channel, "source_cid", "?")
+        destination_cid = getattr(channel, "destination_cid", "?")
+        psm = getattr(channel, "psm", "?")
+
+        if event_name == "open":
+            print(
+                f"\n[L2CAP OPEN] PSM={psm}, source_cid={source_cid}, "
+                f"destination_cid={destination_cid}, "
+                f"MTU={getattr(channel, 'mtu', '?')}/{getattr(channel, 'peer_mtu', '?')}, "
+                f"MPS={getattr(channel, 'mps', '?')}/{getattr(channel, 'peer_mps', '?')}"
+            )
+            logger.info(
+                f"[L2CAP OPEN] psm={psm} scid={source_cid} dcid={destination_cid}"
+            )
+            return
+
+        if event_name == "close":
+            print(
+                f"\n[L2CAP CLOSE] PSM={psm}, source_cid={source_cid}, "
+                f"destination_cid={destination_cid}"
+            )
+            logger.info(
+                f"[L2CAP CLOSE] psm={psm} scid={source_cid} dcid={destination_cid}"
+            )
+            return
+
+        if event_name == "att_mtu_update":
+            mtu = payload.get("mtu") if isinstance(payload, dict) else payload
+            print(
+                f"\n[L2CAP EVENT] ATT MTU update on source_cid={source_cid}: {mtu}"
+            )
+            logger.info(f"[L2CAP ATT_MTU_UPDATE] scid={source_cid} mtu={mtu}")
+            return
+
+        if event_name == "credits":
+            delta = payload.get("delta") if isinstance(payload, dict) else payload
+            total = payload.get("total") if isinstance(payload, dict) else None
+            print(
+                f"\n[L2CAP CREDITS] source_cid={source_cid}, "
+                f"received=+{delta}, total={total}"
+            )
+            logger.info(
+                f"[L2CAP CREDITS] scid={source_cid} received=+{delta} total={total}"
+            )
+            return
+
+        if event_name == "data" and isinstance(payload, (bytes, bytearray)):
+            data = bytes(payload)
+            print(
+                f"\n[L2CAP RX] source_cid={source_cid}, destination_cid={destination_cid}, "
+                f"len={len(data)}: {data.hex()}"
+            )
+            logger.info(
+                f"[L2CAP RX] scid={source_cid} dcid={destination_cid} len={len(data)}"
+            )
     
     def _on_mtu_update_response(self, *args):
         """Handle LE MTU update response event."""
@@ -760,6 +831,129 @@ class BLETestingApp:
             return int(handle_str, 16)
         else:
             return int(handle_str, 10)
+
+    def _parse_hex_payload(self, hex_payload: str, *, allow_empty: bool = False) -> bytes:
+        """Parse a user-provided hex payload (with or without spaces)."""
+        payload = (hex_payload or "").replace(" ", "")
+        if not payload:
+            if allow_empty:
+                return b""
+            raise ValueError("Hex payload cannot be empty")
+
+        if len(payload) % 2 != 0:
+            raise ValueError("Hex payload must contain an even number of characters")
+
+        return bytes.fromhex(payload)
+
+    def _remove_name_ad_structures(self, payload: bytes) -> bytes:
+        """Remove AD name fields (0x08/0x09) from payload while preserving others."""
+        out = bytearray()
+        i = 0
+        total = len(payload)
+
+        while i < total:
+            length = payload[i]
+            if length == 0:
+                break
+
+            chunk_end = i + 1 + length
+            if chunk_end > total:
+                # Keep original payload on malformed AD data.
+                return payload
+
+            ad_type = payload[i + 1]
+            if ad_type not in (0x08, 0x09):
+                out.extend(payload[i:chunk_end])
+
+            i = chunk_end
+
+        return bytes(out)
+
+    def _derive_default_adv_name(self, device) -> str:
+        """Build default advertising name as hciemu_<bd-address>."""
+        raw_address = str(getattr(device, "public_address", "")).strip()
+        bd_address = raw_address.split("/", 1)[0] if raw_address else ""
+        if not bd_address:
+            return "hciemu_<bd-address>"
+        return f"hciemu_{bd_address}"
+
+    def _resolve_adv_name(self, device) -> str:
+        """Resolve active advertising name from custom or default naming mode."""
+        if self.adv_custom_name:
+            return self.adv_custom_name
+        return self._derive_default_adv_name(device)
+
+    def _append_name_ad_structure(self, payload: bytes, name_bytes: bytes) -> tuple[bytes, bool, bool]:
+        """Append complete/shortened local name AD structure if there is room."""
+        max_len = 31  # Legacy advertising PDU budget.
+        room = max_len - len(payload)
+        if room < 2:
+            return payload, False, False
+
+        max_name_len = room - 2
+        if max_name_len <= 0:
+            return payload, False, False
+
+        if len(name_bytes) <= max_name_len:
+            return payload + bytes([len(name_bytes) + 1, 0x09]) + name_bytes, True, False
+
+        short = name_bytes[:max_name_len]
+        return payload + bytes([len(short) + 1, 0x08]) + short, True, True
+
+    def _build_advertising_payloads(self, device) -> tuple[bytes, bytes, str, bool, bool]:
+        """Build final adv/scan-response payloads with optional injected device name."""
+        adv_data = self._parse_hex_payload(self.adv_data_hex, allow_empty=False)
+        scan_response_data = self._parse_hex_payload(self.adv_scan_response_hex, allow_empty=True)
+
+        adv_data = self._remove_name_ad_structures(adv_data)
+        scan_response_data = self._remove_name_ad_structures(scan_response_data)
+
+        if not self.adv_name_enabled:
+            return adv_data, scan_response_data, "", False, False
+
+        name = self._resolve_adv_name(device)
+        name_bytes = name.encode("utf-8", errors="ignore")
+        if not name_bytes:
+            return adv_data, scan_response_data, "", False, False
+
+        adv_with_name, added, truncated = self._append_name_ad_structure(adv_data, name_bytes)
+        if added:
+            return adv_with_name, scan_response_data, name, True, truncated
+
+        scan_with_name, added, truncated = self._append_name_ad_structure(scan_response_data, name_bytes)
+        if added:
+            return adv_data, scan_with_name, name, True, truncated
+
+        return adv_data, scan_response_data, name, False, False
+
+    def _advertising_type(self):
+        from bumble.device import AdvertisingType
+
+        if self.adv_connectable:
+            return AdvertisingType.UNDIRECTED_CONNECTABLE_SCANNABLE
+        return AdvertisingType.UNDIRECTED_SCANNABLE
+
+    async def _apply_advertising_settings(self):
+        """Apply current advertising state values to the active controller."""
+        device = await self._get_scan_device()
+        advertising_data, scan_response_data, adv_name, name_added, name_truncated = (
+            self._build_advertising_payloads(device)
+        )
+
+        await device.start_advertising(
+            advertising_type=self._advertising_type(),
+            advertising_data=advertising_data,
+            scan_response_data=scan_response_data,
+            advertising_interval_min=self.adv_interval_min_ms,
+            advertising_interval_max=self.adv_interval_max_ms,
+        )
+        if self.adv_name_enabled:
+            if name_added:
+                trunc_note = " (shortened)" if name_truncated else ""
+                print(f"[ADV] Local name in advertising: {adv_name}{trunc_note}")
+            else:
+                print("[ADV] Local name enabled but no space left in adv/scan-response payload")
+        self.advertising = True
 
     def _format_advertisement_details(self, adv):
         from bumble.core import AdvertisingData, UUID
@@ -1205,6 +1399,7 @@ class BLETestingApp:
             hci_source=hci_source,
             hci_sink=hci_sink,
         )
+        self.connector.device = self._scan_device
 
         # Enable persistent bonding BEFORE pairing setup
         bonds_file = str(get_user_config_path("bumble_bonds.json"))
@@ -1472,11 +1667,150 @@ class BLETestingApp:
         """Power off Bluetooth controller"""
         print_section("Bluetooth Off")
         try:
+            if self.advertising and self._scan_device is not None:
+                try:
+                    await self._scan_device.stop_advertising()
+                except Exception:
+                    pass
+                self.advertising = False
             await self._close_scan_device()
             print("✓ Bluetooth is OFF\n")
         except Exception as e:
             logger.error(f"Bluetooth off error: {e}")
             print(f"✗ Failed to power off Bluetooth: {e}\n")
+
+    async def app_set_advertising_parameters(
+        self,
+        interval_min_ms: float,
+        interval_max_ms: float,
+        connectable: bool = True,
+    ):
+        """Set advertising timing and connectability parameters."""
+        print_section("Set Advertising Parameters")
+
+        try:
+            if interval_min_ms < 20 or interval_max_ms > 10240:
+                print("✗ Interval range must be within 20 to 10240 ms\n")
+                return
+            if interval_min_ms > interval_max_ms:
+                print("✗ Minimum interval cannot be greater than maximum interval\n")
+                return
+
+            self.adv_interval_min_ms = float(interval_min_ms)
+            self.adv_interval_max_ms = float(interval_max_ms)
+            self.adv_connectable = bool(connectable)
+
+            print(
+                "✓ Advertising parameters updated: "
+                f"interval={self.adv_interval_min_ms:.2f}-{self.adv_interval_max_ms:.2f} ms, "
+                f"connectable={'YES' if self.adv_connectable else 'NO'}"
+            )
+
+            if self.advertising:
+                print("Applying new parameters to active advertising...\n")
+                await self._apply_advertising_settings()
+                print("✓ Advertising updated\n")
+            else:
+                print()
+        except Exception as e:
+            logger.error(f"Set advertising parameters error: {e}")
+            print(f"✗ Failed to set advertising parameters: {e}\n")
+
+    async def app_set_advertising_data(
+        self,
+        adv_data_hex: str,
+        scan_response_hex: str = "",
+    ):
+        """Set advertising payload and optional scan response payload."""
+        print_section("Set Advertising Data")
+
+        try:
+            adv_data = self._parse_hex_payload(adv_data_hex, allow_empty=False)
+            scan_response_data = self._parse_hex_payload(scan_response_hex, allow_empty=True)
+
+            self.adv_data_hex = adv_data.hex()
+            self.adv_scan_response_hex = scan_response_data.hex()
+
+            print(
+                "✓ Advertising data updated: "
+                f"adv={len(adv_data)} bytes, scan_response={len(scan_response_data)} bytes"
+            )
+
+            if self.advertising:
+                print("Applying new advertising payload to active advertising...\n")
+                await self._apply_advertising_settings()
+                print("✓ Advertising updated\n")
+            else:
+                print()
+        except ValueError as e:
+            print(f"✗ Invalid advertising payload: {e}\n")
+        except Exception as e:
+            logger.error(f"Set advertising data error: {e}")
+            print(f"✗ Failed to set advertising data: {e}\n")
+
+    async def app_set_advertising_name(self, enabled: bool, name: Optional[str] = None):
+        """Enable/disable advertising local name and optionally set custom value."""
+        print_section("Set Advertising Device Name")
+
+        try:
+            self.adv_name_enabled = bool(enabled)
+            cleaned_name = (name or "").strip()
+            self.adv_custom_name = cleaned_name if cleaned_name else None
+
+            if self.adv_name_enabled:
+                if self._scan_device is not None:
+                    preview = self._resolve_adv_name(self._scan_device)
+                elif self.adv_custom_name:
+                    preview = self.adv_custom_name
+                else:
+                    preview = "hciemu_<bd-address>"
+                print(f"✓ Advertising local name enabled: {preview}")
+            else:
+                print("✓ Advertising local name disabled")
+
+            if self.advertising:
+                print("Applying name setting to active advertising...\n")
+                await self._apply_advertising_settings()
+                print("✓ Advertising updated\n")
+            else:
+                print()
+        except Exception as e:
+            logger.error(f"Set advertising name error: {e}")
+            print(f"✗ Failed to set advertising name: {e}\n")
+
+    async def app_start_advertising(self):
+        """Start advertising using configured parameters and payloads."""
+        print_section("Start Advertising")
+
+        try:
+            await self._apply_advertising_settings()
+            print(
+                "✓ Advertising started "
+                f"(interval={self.adv_interval_min_ms:.2f}-{self.adv_interval_max_ms:.2f} ms, "
+                f"connectable={'YES' if self.adv_connectable else 'NO'})\n"
+            )
+        except ValueError as e:
+            print(f"✗ Invalid advertising configuration: {e}\n")
+        except Exception as e:
+            logger.error(f"Start advertising error: {e}")
+            print(f"✗ Failed to start advertising: {e}\n")
+
+    async def app_stop_advertising(self):
+        """Stop active advertising if running."""
+        print_section("Stop Advertising")
+
+        try:
+            if self._scan_device is None:
+                self.advertising = False
+                print("Advertising is not running\n")
+                return
+
+            await self._scan_device.stop_advertising()
+            self.advertising = False
+            print("✓ Advertising stopped\n")
+        except Exception as e:
+            logger.error(f"Stop advertising error: {e}")
+            print(f"✗ Failed to stop advertising: {e}\n")
     
     async def app_discover_services(self):
         """Discover GATT services"""
@@ -2353,6 +2687,206 @@ class BLETestingApp:
         except Exception as e:
             logger.error(f"MTU exchange error: {e}", exc_info=True)
             print(f"✗ MTU exchange failed: {e}\n")
+
+    async def app_l2cap_create_cbfc(
+        self,
+        psm: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ):
+        """Create one LE credit-based L2CAP channel (CBFC)."""
+        if not self.connected:
+            print("✗ Not connected to any device\n")
+            return
+
+        print_section("L2CAP CBFC - Create Channel")
+        try:
+            result = await self.connector.create_l2cap_cbfc_channel(
+                psm=psm,
+                mtu=mtu,
+                mps=mps,
+                max_credits=max_credits,
+            )
+            print(
+                "✓ CBFC channel created: "
+                f"PSM={result['psm']}, source_cid={result['source_cid']}, "
+                f"destination_cid={result['destination_cid']}\n"
+            )
+        except Exception as e:
+            logger.error(f"L2CAP CBFC create failed: {e}", exc_info=True)
+            print(f"✗ L2CAP CBFC create failed: {e}\n")
+
+    async def app_l2cap_start_cbfc_server(
+        self,
+        psm: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ):
+        """Start inbound CBFC listener on an LE PSM."""
+        print_section("L2CAP CBFC - Start Server")
+        try:
+            await self._get_scan_device()
+            result = await self.connector.start_l2cap_cbfc_server(
+                psm=psm,
+                mtu=mtu,
+                mps=mps,
+                max_credits=max_credits,
+            )
+            print(f"✓ L2CAP server listening on PSM={result['psm']}\n")
+        except Exception as e:
+            logger.error(f"L2CAP server start failed: {e}", exc_info=True)
+            print(f"✗ L2CAP server start failed: {e}\n")
+
+    async def app_l2cap_stop_cbfc_server(self, psm: int):
+        """Stop inbound CBFC listener on an LE PSM."""
+        print_section("L2CAP CBFC - Stop Server")
+        try:
+            stopped = self.connector.stop_l2cap_cbfc_server(psm=psm)
+            if stopped:
+                print(f"✓ L2CAP server stopped on PSM={psm}\n")
+            else:
+                print(f"No active L2CAP server on PSM={psm}\n")
+        except Exception as e:
+            logger.error(f"L2CAP server stop failed: {e}", exc_info=True)
+            print(f"✗ L2CAP server stop failed: {e}\n")
+
+    async def app_l2cap_list_servers(self):
+        """List active L2CAP servers currently listening for inbound channels."""
+        print_section("L2CAP Active Servers")
+        servers = self.connector.list_l2cap_servers()
+        if not servers:
+            print("No active L2CAP servers\n")
+            return
+
+        for server in servers:
+            print(f"- PSM={server['psm']}")
+        print()
+
+    async def app_l2cap_create_ecbfc(
+        self,
+        psm: int,
+        count: int,
+        mtu: int = 2048,
+        mps: int = 2048,
+        max_credits: int = 256,
+    ):
+        """Create enhanced credit-based channels (ECBFC channel set)."""
+        if not self.connected:
+            print("✗ Not connected to any device\n")
+            return
+
+        print_section("L2CAP ECBFC - Create Channel Set")
+        try:
+            created = await self.connector.create_l2cap_ecbfc_channels(
+                psm=psm,
+                count=count,
+                mtu=mtu,
+                mps=mps,
+                max_credits=max_credits,
+            )
+            print(f"✓ ECBFC created {len(created)} channel(s):")
+            for item in created:
+                print(
+                    "  - "
+                    f"PSM={item['psm']}, source_cid={item['source_cid']}, "
+                    f"destination_cid={item['destination_cid']}"
+                )
+            print()
+        except Exception as e:
+            logger.error(f"L2CAP ECBFC create failed: {e}", exc_info=True)
+            print(f"✗ L2CAP ECBFC create failed: {e}\n")
+
+    async def app_l2cap_list_channels(self):
+        """Print all tracked open L2CAP channels and parameters."""
+        print_section("L2CAP Open Channels")
+        channels = self.connector.get_open_l2cap_channels()
+        if not channels:
+            print("No open L2CAP channels\n")
+            return
+
+        for channel in channels:
+            print(
+                "- "
+                f"PSM={channel['psm']} "
+                f"source_cid={channel['source_cid']} "
+                f"destination_cid={channel['destination_cid']} "
+                f"MTU={channel['mtu']}/{channel['peer_mtu']} "
+                f"MPS={channel['mps']}/{channel['peer_mps']} "
+                f"credits(ours/peer)={channel['credits_ours']}/{channel['credits_peer']} "
+                f"state={channel['state']}"
+            )
+        print()
+
+    async def app_l2cap_disconnect_channel(self, source_cid: int):
+        """Disconnect one L2CAP channel by source CID."""
+        print_section("L2CAP Disconnect Channel")
+        try:
+            await self.connector.disconnect_l2cap_channel(source_cid)
+            print(f"✓ Disconnect requested for source_cid={source_cid}\n")
+        except Exception as e:
+            logger.error(f"L2CAP disconnect failed: {e}", exc_info=True)
+            print(f"✗ L2CAP disconnect failed: {e}\n")
+
+    async def app_l2cap_send_credits(self, source_cid: int, credits: int):
+        """Send explicit LE flow-control credits on one channel."""
+        print_section("L2CAP Send Credits")
+        try:
+            self.connector.send_l2cap_credits(source_cid=source_cid, credits=credits)
+            print(f"✓ Sent {credits} credit(s) on source_cid={source_cid}\n")
+        except Exception as e:
+            logger.error(f"L2CAP send credits failed: {e}", exc_info=True)
+            print(f"✗ L2CAP send credits failed: {e}\n")
+
+    async def app_l2cap_send_data(
+        self,
+        source_cid: int,
+        hex_data: str,
+        wait_drain: bool = True,
+    ):
+        """Send payload bytes on a connected L2CAP channel."""
+        print_section("L2CAP Send Data")
+        try:
+            payload = bytes.fromhex(hex_data.replace(" ", ""))
+            self.connector.send_l2cap_data(source_cid=source_cid, data=payload)
+            if wait_drain:
+                await self.connector.drain_l2cap_channel(source_cid=source_cid)
+            print(
+                f"✓ Sent {len(payload)} byte(s) on source_cid={source_cid}: "
+                f"{payload.hex()}\n"
+            )
+        except Exception as e:
+            logger.error(f"L2CAP send data failed: {e}", exc_info=True)
+            print(f"✗ L2CAP send data failed: {e}\n")
+
+    async def app_l2cap_reconfigure_ecbfc(
+        self,
+        source_cids: List[int],
+        mtu: int,
+        mps: int,
+    ):
+        """Attempt ECBFC channel-set reconfigure (if supported by Bumble runtime)."""
+        print_section("L2CAP ECBFC Reconfigure")
+        try:
+            ok = await self.connector.reconfigure_l2cap_ecbfc_channels(
+                source_cids=source_cids,
+                mtu=mtu,
+                mps=mps,
+            )
+            if ok:
+                print(
+                    f"✓ ECBFC reconfigure request sent for source_cids={source_cids}, "
+                    f"mtu={mtu}, mps={mps}\n"
+                )
+            else:
+                print(
+                    "✗ ECBFC reconfigure is not exposed by this Bumble build "
+                    "(channel create is supported, reconfigure API is missing).\n"
+                )
+        except Exception as e:
+            logger.error(f"L2CAP ECBFC reconfigure failed: {e}", exc_info=True)
+            print(f"✗ L2CAP ECBFC reconfigure failed: {e}\n")
     
     async def app_unpair(
         self,
