@@ -42,7 +42,12 @@ class BLETestingMenu:
     def _prompt_int(self, prompt: str, default: int) -> int:
         """Prompt integer with default fallback."""
         raw = input(prompt).strip()
-        return int(raw) if raw else default
+        return int(raw, 0) if raw else default
+
+    def _prompt_float(self, prompt: str, default: float) -> float:
+        """Prompt float with default fallback."""
+        raw = input(prompt).strip()
+        return float(raw) if raw else default
 
     async def _prompt_text_async(self, prompt: str) -> str:
         """Prompt text without blocking the asyncio event loop."""
@@ -75,6 +80,9 @@ class BLETestingMenu:
             ("16", "Stop Burst Read"),
             ("17", "Start CSV Logging"),
             ("18", "Stop CSV Logging"),
+            ("19", "Exchange GATT MTU"),
+            ("20", "L2CAP Operations (CBFC/ECBFC)"),
+            ("21", "Advertising Menu"),
             ("0", "Exit"),
         ]
 
@@ -316,6 +324,250 @@ class BLETestingMenu:
         filename = input("CSV filename (default: notifications_TIMESTAMP.csv): ").strip() or None
         await self.app.app_start_csv_logging(filename=filename)
 
+    async def menu_exchange_mtu(self):
+        print_section("Exchange GATT MTU")
+        mtu_size = self._prompt_int("Requested ATT MTU (23-517, default 247): ", default=247)
+        await self.app.app_exchange_mtu(mtu_size=mtu_size)
+
+    async def menu_l2cap_operations(self):
+        while True:
+            print_section("L2CAP Operations")
+            print("  1. Start CBFC server (listen)")
+            print("  2. Stop CBFC server")
+            print("  3. Create CBFC channel")
+            print("  4. Create ECBFC channel set")
+            print("  5. View open channels")
+            print("  6. View active L2CAP servers")
+            print("  7. Send data on channel")
+            print("  8. Send credits on channel")
+            print("  9. Disconnect channel")
+            print("  10. Reconfigure ECBFC (MTU/MPS)")
+            print("  0. Back to Main Menu\n")
+
+            choice = await self._prompt_text_async("Select option: ")
+            if choice == "0":
+                print()
+                return
+
+            if choice == "1":
+                await self.menu_l2cap_start_server()
+            elif choice == "2":
+                await self.menu_l2cap_stop_server()
+            elif choice == "3":
+                await self.menu_l2cap_create_cbfc()
+            elif choice == "4":
+                await self.menu_l2cap_create_ecbfc()
+            elif choice == "5":
+                await self.app.app_l2cap_list_channels()
+            elif choice == "6":
+                await self.app.app_l2cap_list_servers()
+            elif choice == "7":
+                await self.menu_l2cap_send_data()
+            elif choice == "8":
+                await self.menu_l2cap_send_credits()
+            elif choice == "9":
+                await self.menu_l2cap_disconnect_channel()
+            elif choice == "10":
+                await self.menu_l2cap_reconfigure_ecbfc()
+            else:
+                print("Invalid option\n")
+
+    async def menu_l2cap_start_server(self):
+        print_section("Start L2CAP CBFC Server")
+        psm = self._prompt_int("LE PSM (hex like 0x0080 or decimal): ", default=0x0080)
+        mtu = self._prompt_int("Local MTU (default 2048): ", default=2048)
+        mps = self._prompt_int("Local MPS (default 2048): ", default=2048)
+        max_credits = self._prompt_int("Initial max credits (default 256): ", default=256)
+        await self.app.app_l2cap_start_cbfc_server(
+            psm=psm,
+            mtu=mtu,
+            mps=mps,
+            max_credits=max_credits,
+        )
+
+    async def menu_l2cap_stop_server(self):
+        print_section("Stop L2CAP CBFC Server")
+        psm = self._prompt_int("LE PSM to stop (hex like 0x0080 or decimal): ", default=0x0080)
+        await self.app.app_l2cap_stop_cbfc_server(psm=psm)
+
+    async def menu_l2cap_create_cbfc(self):
+        print_section("Create L2CAP CBFC")
+        psm = self._prompt_int("LE PSM (hex like 0x0080 or decimal): ", default=0x0080)
+        mtu = self._prompt_int("Local MTU (default 2048): ", default=2048)
+        mps = self._prompt_int("Local MPS (default 2048): ", default=2048)
+        max_credits = self._prompt_int("Initial max credits (default 256): ", default=256)
+        await self.app.app_l2cap_create_cbfc(psm=psm, mtu=mtu, mps=mps, max_credits=max_credits)
+
+    async def menu_l2cap_create_ecbfc(self):
+        print_section("Create L2CAP ECBFC")
+        psm = self._prompt_int("SPSM/LE PSM (hex like 0x0080 or decimal): ", default=0x0080)
+        count = self._prompt_int("Channel count (default 2): ", default=2)
+        mtu = self._prompt_int("Local MTU (default 2048): ", default=2048)
+        mps = self._prompt_int("Local MPS (default 2048): ", default=2048)
+        max_credits = self._prompt_int("Initial max credits (default 256): ", default=256)
+        await self.app.app_l2cap_create_ecbfc(
+            psm=psm,
+            count=count,
+            mtu=mtu,
+            mps=mps,
+            max_credits=max_credits,
+        )
+
+    def _print_l2cap_channels_inline(self):
+        """Print open L2CAP channels as a compact table, used before CID prompts."""
+        channels = self.app.connector.get_open_l2cap_channels()
+        if not channels:
+            print("  (no open L2CAP channels)")
+        else:
+            print("  Open channels:")
+            for ch in channels:
+                print(
+                    f"    CID={ch['source_cid']}  PSM={ch['psm']}  "
+                    f"MTU={ch['mtu']}/{ch['peer_mtu']}  "
+                    f"credits(ours/peer)={ch['credits_ours']}/{ch['credits_peer']}  "
+                    f"state={ch['state']}"
+                )
+        print()
+
+    async def menu_l2cap_disconnect_channel(self):
+        print_section("Disconnect L2CAP Channel")
+        self._print_l2cap_channels_inline()
+        source_cid = self._prompt_int("Source CID to disconnect (decimal): ", default=64)
+        await self.app.app_l2cap_disconnect_channel(source_cid=source_cid)
+
+    async def menu_l2cap_send_credits(self):
+        print_section("Send L2CAP Credits")
+        self._print_l2cap_channels_inline()
+        source_cid = self._prompt_int("Source CID (decimal): ", default=64)
+        credits = self._prompt_int("Credits to send (default 1): ", default=1)
+        await self.app.app_l2cap_send_credits(source_cid=source_cid, credits=credits)
+
+    async def menu_l2cap_send_data(self):
+        print_section("Send L2CAP Data")
+        self._print_l2cap_channels_inline()
+        source_cid = self._prompt_int("Source CID (decimal): ", default=64)
+        hex_data = input("Payload (hex, space-separated or continuous): ").strip()
+        wait_drain = self._prompt_yes_no("Wait for channel drain? (Y/n): ", default=True)
+        await self.app.app_l2cap_send_data(
+            source_cid=source_cid,
+            hex_data=hex_data,
+            wait_drain=wait_drain,
+        )
+
+    async def menu_l2cap_reconfigure_ecbfc(self):
+        print_section("Reconfigure L2CAP ECBFC")
+        self._print_l2cap_channels_inline()
+        source_cids_raw = input("Source CIDs (comma-separated, e.g. 64,65): ").strip()
+        if not source_cids_raw:
+            print("No source CIDs provided\n")
+            return
+
+        try:
+            source_cids = [int(part.strip()) for part in source_cids_raw.split(",") if part.strip()]
+        except ValueError:
+            print("Invalid CID list\n")
+            return
+
+        mtu = self._prompt_int("New MTU: ", default=2048)
+        mps = self._prompt_int("New MPS: ", default=2048)
+        await self.app.app_l2cap_reconfigure_ecbfc(source_cids=source_cids, mtu=mtu, mps=mps)
+
+    async def menu_set_advertising_parameters(self):
+        print_section("Set Advertising Parameters")
+        interval_min_ms = self._prompt_float(
+            f"Min interval ms (default {self.app.adv_interval_min_ms}): ",
+            default=self.app.adv_interval_min_ms,
+        )
+        interval_max_ms = self._prompt_float(
+            f"Max interval ms (default {self.app.adv_interval_max_ms}): ",
+            default=self.app.adv_interval_max_ms,
+        )
+        connectable = self._prompt_yes_no(
+            f"Connectable advertising? (Y/n, current {'Y' if self.app.adv_connectable else 'N'}): ",
+            default=self.app.adv_connectable,
+        )
+        await self.app.app_set_advertising_parameters(
+            interval_min_ms=interval_min_ms,
+            interval_max_ms=interval_max_ms,
+            connectable=connectable,
+        )
+
+    async def menu_set_advertising_data(self):
+        print_section("Set Advertising Data")
+        adv_data_hex = (
+            input(f"Advertising data hex (default {self.app.adv_data_hex}): ").strip()
+            or self.app.adv_data_hex
+        )
+        scan_rsp_hex = input(
+            "Scan response hex (optional, leave empty for none): "
+        ).strip()
+        await self.app.app_set_advertising_data(
+            adv_data_hex=adv_data_hex,
+            scan_response_hex=scan_rsp_hex,
+        )
+
+    async def menu_set_advertising_name(self):
+        print_section("Set Advertising Device Name")
+        enabled = self._prompt_yes_no(
+            f"Enable local name in advertising data? (Y/n, current {'Y' if self.app.adv_name_enabled else 'N'}): ",
+            default=self.app.adv_name_enabled,
+        )
+
+        if not enabled:
+            await self.app.app_set_advertising_name(enabled=False)
+            return
+
+        current_name = self.app.adv_custom_name or "hciemu_<bd-address>"
+        custom_name = input(
+            f"Custom local name (leave empty for default, current {current_name}): "
+        ).strip()
+        await self.app.app_set_advertising_name(
+            enabled=True,
+            name=custom_name or None,
+        )
+
+    async def menu_advertising(self):
+        while True:
+            print_section("Advertising Menu")
+            print(
+                "Current: "
+                f"{'ON' if self.app.advertising else 'OFF'}, "
+                f"interval {self.app.adv_interval_min_ms:.2f}-{self.app.adv_interval_max_ms:.2f} ms, "
+                f"connectable={'YES' if self.app.adv_connectable else 'NO'}"
+            )
+            print(f"Adv Data: {self.app.adv_data_hex or '(empty)'}")
+            print(
+                "Scan Response: "
+                f"{self.app.adv_scan_response_hex if self.app.adv_scan_response_hex else '(empty)'}"
+            )
+            name_status = "ON" if self.app.adv_name_enabled else "OFF"
+            name_value = self.app.adv_custom_name or "hciemu_<bd-address>"
+            print(f"Local Name: {name_status} ({name_value})")
+            print()
+            print("  1. Set Advertising Parameters")
+            print("  2. Set Advertising Data")
+            print("  3. Set Advertising Device Name")
+            print("  4. Start Advertising")
+            print("  5. Stop Advertising")
+            print("  0. Back to Main Menu\n")
+
+            choice = await self._prompt_text_async("Select option: ")
+            if choice == "0":
+                print()
+                return
+            if choice == "1":
+                await self.menu_set_advertising_parameters()
+            elif choice == "2":
+                await self.menu_set_advertising_data()
+            elif choice == "3":
+                await self.menu_set_advertising_name()
+            elif choice == "4":
+                await self.app.app_start_advertising()
+            elif choice == "5":
+                await self.app.app_stop_advertising()
+            else:
+                print("Invalid option\n")
+
     async def menu_smp_settings(self):
         while True:
             print_section("SMP (Secure Manager Protocol) Settings")
@@ -334,7 +586,7 @@ class BLETestingMenu:
                 f"{'ENABLED' if self.app.auto_restore_cccd_on_reconnect else 'DISABLED'}")
             print("  0. Back to Main Menu\n")
 
-            choice = input("Select option: ").strip()
+            choice = await self._prompt_text_async("Select option: ")
             if choice == "0":
                 break
             if choice == "1":
@@ -452,6 +704,12 @@ class BLETestingMenu:
                     await self.menu_start_csv_logging()
                 elif choice == "18":
                     await self.app.app_stop_csv_logging()
+                elif choice == "19":
+                    await self.menu_exchange_mtu()
+                elif choice == "20":
+                    await self.menu_l2cap_operations()
+                elif choice == "21":
+                    await self.menu_advertising()
                 elif choice == "0":
                     print("\nExiting...")
                     break
