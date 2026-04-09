@@ -898,7 +898,7 @@ class BLEConnector:
         if not self.connected_device or not self.device:
             logger.error("No device connected")
             return False
-        
+
         try:
             logger.info("Checking security status on bonded connection...")
             
@@ -930,6 +930,22 @@ class BLEConnector:
         except Exception as e:
             logger.error(f"Encryption failed: {e}", exc_info=True)
             print(f"[SECURITY] ✗ Encryption failed: {e}")
+            return False
+
+    def send_security_request(self) -> bool:
+        """Send an SMP Security Request on the active connection."""
+        if not self.connected_device:
+            logger.error("No device connected")
+            return False
+
+        try:
+            self.connected_device.request_pairing()
+            logger.info(
+                f"[SECURITY REQUEST] Sent SMP Security Request to {self.connected_device.peer_address}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send SMP Security Request: {e}", exc_info=True)
             return False
     
     async def pair(self) -> bool:

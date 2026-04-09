@@ -12,6 +12,7 @@ import logging
 import sys
 from typing import Optional, List
 import os
+from bumble.hci import Role
 
 try:
     from rich.table import Table
@@ -522,7 +523,7 @@ class BLETestingApp:
         if auto_pair_on_security_request and not is_bonded:
             print("\n[SECURITY] Device is not bonded.")
             print("[SECURITY] Waiting for peer security request to initiate pairing...\n")
-            print("[SECURITY] You can also initiate pairing manually from menu Option 9 (Pair / Encrypt Connection).\n")
+            print("[SECURITY] You can also initiate pairing manually from menu Option 41 (Pair / Encrypt Connection).\n")
             logger.info("[APP] Waiting for peer security request before starting pairing")
         elif not auto_pair_on_security_request and not is_bonded:
             print("\n[INFO] Auto-pairing is disabled. Device not bonded.\n")
@@ -561,9 +562,9 @@ class BLETestingApp:
 
         print("Connection ready.\n")
         print("Next steps:")
-        print("  - Option 9: Encrypt connection (if bonded)")
-        print("  - Option 3: Discover GATT Services")
-        print("  - Option 11: Disconnect\n")
+        print("  - Option 41: Pair / Encrypt connection")
+        print("  - Option 21: Discover GATT Services")
+        print("  - Option 3: Disconnect\n")
 
         self._connect_in_progress = False
         self._connect_target_address = None
@@ -2651,6 +2652,31 @@ class BLETestingApp:
                 logger.error(f"Pairing error: {e}")
                 print(f"✗ Pairing error: {e}\n")
 
+    async def app_send_security_request(self):
+        """Send an SMP Security Request when acting as the peripheral."""
+        if not self.connected or not self.connector.connected_device:
+            print("✗ Not connected to any device\n")
+            return
+
+        print_section("Send SMP Security Request")
+        print(f"Device: {self.current_device}\n")
+
+        connection = self.connector.connected_device
+        if getattr(connection, "role", None) != Role.PERIPHERAL:
+            print("✗ SMP Security Request is only valid when this side is the peripheral.\n")
+            print("Use advertising/inbound connection mode, then retry this option.\n")
+            logger.warning(
+                "[SECURITY REQUEST] Rejected manual request because local role is not peripheral"
+            )
+            return
+
+        print("Sending SMP Security Request...")
+        if self.connector.send_security_request():
+            print("✓ Security Request sent\n")
+            print("Wait for the peer to respond with encryption or pairing.\n")
+        else:
+            print("✗ Failed to send Security Request\n")
+
     async def app_exchange_mtu(self, mtu_size: int = 247):
         """Exchange ATT MTU with connected peer using event-driven completion."""
         if not self.connected or not self.connector.connected_device:
@@ -2979,46 +3005,52 @@ class BLETestingApp:
                         print("Use app_toggle_hci_snoop(enable=...) directly in non-interactive mode\n")
                     elif choice.lower() == "e":
                         print("Use app_debug_logging(mode=...) directly in non-interactive mode\n")
-                    elif choice.lower() == "s":
-                        await self.app_smp_settings()
                     elif choice == "1":
                         await self.app_scan_devices()
                     elif choice == "2":
                         print("app_connect_device is not available in BLETestingApp\n")
                     elif choice == "3":
-                        await self.app_discover_services()
-                    elif choice == "4":
-                        print("Use app_read_characteristic(handle=...) directly in non-interactive mode\n")
-                    elif choice == "5":
-                        print("Use app_write_characteristic(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "6":
-                        print("Use app_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "7":
-                        print("Use app_subscribe(handle=...) directly in non-interactive mode\n")
-                    elif choice == "8":
-                        print("Use app_subscribe_indications(handle=...) directly in non-interactive mode\n")
-                    elif choice == "9":
-                        await self.app_pair()
-                    elif choice == "10":
-                        print("Use app_unpair(index=... or address=...) directly in non-interactive mode\n")
-                    elif choice == "11":
                         await self.app_disconnect()
-                    elif choice == "12":
+                    elif choice == "21":
+                        await self.app_discover_services()
+                    elif choice == "22":
+                        print("Use app_read_characteristic(handle=...) directly in non-interactive mode\n")
+                    elif choice == "23":
+                        print("Use app_write_characteristic(handle=..., hex_value=...) directly in non-interactive mode\n")
+                    elif choice == "24":
+                        print("Use app_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
+                    elif choice == "25":
+                        print("Use app_subscribe(handle=...) directly in non-interactive mode\n")
+                    elif choice == "26":
+                        print("Use app_subscribe_indications(handle=...) directly in non-interactive mode\n")
+                    elif choice == "27":
                         print("Use app_burst_write(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "13":
+                    elif choice == "28":
                         print("Use app_burst_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "14":
+                    elif choice == "29":
                         await self.app_stop_burst_write()
-                    elif choice == "15":
+                    elif choice == "30":
                         print("Use app_burst_read(handle=...) directly in non-interactive mode\n")
-                    elif choice == "16":
+                    elif choice == "31":
                         await self.app_stop_burst_read()
-                    elif choice == "17":
+                    elif choice == "32":
                         await self.app_start_csv_logging()
-                    elif choice == "18":
+                    elif choice == "33":
                         await self.app_stop_csv_logging()
-                    elif choice == "19":
+                    elif choice == "34":
                         print("Use app_exchange_mtu(mtu_size=...) directly in non-interactive mode\n")
+                    elif choice == "41":
+                        await self.app_pair()
+                    elif choice == "42":
+                        await self.app_send_security_request()
+                    elif choice == "43" or choice.lower() == "s":
+                        await self.app_smp_settings()
+                    elif choice == "44":
+                        print("Use app_unpair(index=... or address=...) directly in non-interactive mode\n")
+                    elif choice == "51":
+                        print("Use advertising menu in interactive mode\n")
+                    elif choice == "61":
+                        print("Use L2CAP menu in interactive mode\n")
                     elif choice == "0":
                         print("\nExiting...")
                         break
