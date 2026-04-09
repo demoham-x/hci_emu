@@ -80,6 +80,7 @@ class BLETestingMenu:
             ("32", "Start CSV Logging"),
             ("33", "Stop CSV Logging"),
             ("34", "Exchange GATT MTU"),
+            ("35", "Apple Services (ANCS / AMS)"),
             ("", "--- SMP (41-50) ---"),
             ("41", "Pair / Encrypt Connection"),
             ("42", "Send SMP Security Request"),
@@ -334,6 +335,91 @@ class BLETestingMenu:
         print_section("Exchange GATT MTU")
         mtu_size = self._prompt_int("Requested ATT MTU (23-517, default 247): ", default=247)
         await self.app.app_exchange_mtu(mtu_size=mtu_size)
+
+    async def menu_apple_services(self):
+        while True:
+            print_section("Apple Services")
+            print("  1. Initialize / Refresh Apple Services")
+            print("  2. Show Apple Service Status")
+            print("  3. Subscribe ANCS")
+            print("  4. Request ANCS Notification Attributes")
+            print("  5. Request ANCS App Attributes")
+            print("  6. Perform ANCS Action")
+            print("  7. Subscribe AMS")
+            print("  8. Register AMS Entity Updates")
+            print("  9. Read AMS Entity Attribute")
+            print("  10. Send AMS Remote Command")
+            print("  0. Back to Main Menu\n")
+
+            choice = await self._prompt_text_async("Select option: ")
+            if choice == "0":
+                print()
+                return
+
+            if choice == "1":
+                await self.app.app_apple_initialize()
+            elif choice == "2":
+                await self.app.app_apple_initialize(discover_if_needed=False)
+            elif choice == "3":
+                auto_fetch = self._prompt_yes_no(
+                    "Auto request ANCS notification attributes when events arrive? (Y/n): ",
+                    default=True,
+                )
+                auto_fetch_app = self._prompt_yes_no(
+                    "Auto request ANCS app display name after notification attributes? (Y/n): ",
+                    default=True,
+                )
+                await self.app.app_apple_subscribe_ancs(
+                    auto_fetch_details=auto_fetch,
+                    auto_fetch_app_attributes=auto_fetch_app,
+                )
+            elif choice == "4":
+                notification_uid = input("Notification UID (decimal or hex, e.g. 0x12345678): ").strip()
+                await self.app.app_apple_request_ancs_notification_attributes(notification_uid)
+            elif choice == "5":
+                app_identifier = input("App Identifier (for example com.apple.mobilephone): ").strip()
+                if not app_identifier:
+                    print("App identifier is required\n")
+                    continue
+                await self.app.app_apple_request_ancs_app_attributes(app_identifier)
+            elif choice == "6":
+                notification_uid = input("Notification UID (decimal or hex): ").strip()
+                action = input("Action (positive/negative): ").strip()
+                await self.app.app_apple_perform_ancs_action(notification_uid, action)
+            elif choice == "7":
+                register_defaults = self._prompt_yes_no(
+                    "Register default AMS player/queue/track updates after subscribe? (Y/n): ",
+                    default=True,
+                )
+                auto_read_truncated = self._prompt_yes_no(
+                    "Auto read full AMS values when notifications are truncated? (Y/n): ",
+                    default=True,
+                )
+                await self.app.app_apple_subscribe_ams(
+                    register_defaults=register_defaults,
+                    auto_read_truncated=auto_read_truncated,
+                )
+            elif choice == "8":
+                entity = input("Entity (player, queue, track): ").strip()
+                attributes_raw = input(
+                    "Attributes (comma-separated, e.g. name,playback_info or title,artist): "
+                ).strip()
+                attributes = [part.strip() for part in attributes_raw.split(",") if part.strip()]
+                if not attributes:
+                    print("At least one AMS attribute is required\n")
+                    continue
+                await self.app.app_apple_register_ams_updates(entity, attributes)
+            elif choice == "9":
+                entity = input("Entity (player, queue, track): ").strip()
+                attribute = input("Attribute: ").strip()
+                await self.app.app_apple_read_ams_attribute(entity, attribute)
+            elif choice == "10":
+                command = input(
+                    "AMS command (play, pause, toggle_play_pause, next_track, previous_track, volume_up, volume_down, skip_forward, skip_backward): "
+                ).strip()
+                await self.app.app_apple_send_ams_command(command)
+            else:
+                print("Invalid option\n")
 
     async def menu_l2cap_operations(self):
         while True:
@@ -706,6 +792,8 @@ class BLETestingMenu:
                     await self.app.app_stop_csv_logging()
                 elif choice == "34":
                     await self.menu_exchange_mtu()
+                elif choice == "35":
+                    await self.menu_apple_services()
                 elif choice == "41":
                     await self.app.app_pair()
                 elif choice == "42":
