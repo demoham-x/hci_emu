@@ -12,6 +12,7 @@ import logging
 import sys
 from typing import Optional, List
 import os
+from bumble.hci import Role
 
 try:
     from rich.table import Table
@@ -51,6 +52,7 @@ else:
 
 # Import local modules
 from hciemu.scanner import BLEScanner
+from hciemu.apple_services import AppleServices
 from hciemu.connector import BLEConnector
 from hciemu.utils import print_section, format_address
 from hciemu.paths import (
@@ -78,6 +80,7 @@ class BLETestingApp:
         self.discovered_devices = {}
         self.connected = False
         self.current_device = None
+        self.apple_services = None
         self.uuid_name_map, self.ad_type_name_map = self._load_resource_maps()
         self._scan_transport = None
         self._scan_device = None
@@ -256,6 +259,7 @@ class BLETestingApp:
             self.connected = False
             self.current_device = None
             self.connector.connected_device = None
+            self._reset_apple_services()
             self._connect_in_progress = False
             self._connect_target_address = None
             logger.error(f"[CONNECTION FAILED] Error: {error}")
@@ -291,6 +295,7 @@ class BLETestingApp:
             self.current_device = None
             self.connector.connected_device = None
             self.connector.reset_connection_mtu_state()
+            self._reset_apple_services()
 
         custom_handlers = {
             "disconnection": on_disconnection,
@@ -522,7 +527,7 @@ class BLETestingApp:
         if auto_pair_on_security_request and not is_bonded:
             print("\n[SECURITY] Device is not bonded.")
             print("[SECURITY] Waiting for peer security request to initiate pairing...\n")
-            print("[SECURITY] You can also initiate pairing manually from menu Option 9 (Pair / Encrypt Connection).\n")
+            print("[SECURITY] You can also initiate pairing manually from menu Option 41 (Pair / Encrypt Connection).\n")
             logger.info("[APP] Waiting for peer security request before starting pairing")
         elif not auto_pair_on_security_request and not is_bonded:
             print("\n[INFO] Auto-pairing is disabled. Device not bonded.\n")
@@ -545,6 +550,7 @@ class BLETestingApp:
                                     force_fresh=True,
                                     restore_persisted_cccd=True,
                                 )
+                                self._refresh_apple_services()
                                 print("[CCCD] Auto-restore completed\n")
                             except Exception as e:
                                 logger.warning(f"[CCCD] Auto-restore failed: {e}")
@@ -561,9 +567,9 @@ class BLETestingApp:
 
         print("Connection ready.\n")
         print("Next steps:")
-        print("  - Option 9: Encrypt connection (if bonded)")
-        print("  - Option 3: Discover GATT Services")
-        print("  - Option 11: Disconnect\n")
+        print("  - Option 41: Pair / Encrypt connection")
+        print("  - Option 21: Discover GATT Services")
+        print("  - Option 3: Disconnect\n")
 
         self._connect_in_progress = False
         self._connect_target_address = None
@@ -823,6 +829,42 @@ class BLETestingApp:
         if name:
             return f"{uuid_str} ({name})"
         return uuid_str
+
+    def _reset_apple_services(self):
+        self.apple_services = None
+
+    def _refresh_apple_services(self):
+        if not self.connector.service_details:
+            self.apple_services = None
+            return None
+
+        if self.apple_services is None:
+            self.apple_services = AppleServices(self.connector)
+
+        self.apple_services.refresh_from_discovery()
+        if not self.apple_services.has_any():
+            self.apple_services = None
+            return None
+
+        return self.apple_services
+
+    async def _ensure_apple_services(self, discover_if_needed: bool = True):
+        if not self.connected:
+            print("✗ Not connected to any device\n")
+            return None
+
+        if not self.connector.service_details:
+            if not discover_if_needed:
+                print("Apple services not initialized. Discover services first.\n")
+                return None
+            await self.connector.discover_services(force_fresh=True)
+
+        apple_services = self._refresh_apple_services()
+        if not apple_services:
+            print("No Apple ANCS or AMS services found on the connected device.\n")
+            return None
+
+        return apple_services
     
     def _parse_handle(self, handle_str: str) -> int:
         """Parse handle from string - accepts both decimal and hex (0x prefixed)"""
@@ -1823,6 +1865,7 @@ class BLETestingApp:
         
         # Always do fresh discovery for this standalone option
         services = await self.connector.discover_services(force_fresh=True)
+        apple_services = self._refresh_apple_services()
 
         if services:
             if HAS_RICH and console:
@@ -1915,6 +1958,9 @@ class BLETestingApp:
                     print(f"  Service: {uuid}")
                     for char in chars:
                         print(f"    - {char}")
+            if apple_services:
+                print("\nApple service summary:")
+                apple_services.print_status()
         else:
             print("No services found")
         print()
@@ -2221,6 +2267,214 @@ class BLETestingApp:
             print("Invalid handle\n")
         except Exception as e:
             logger.error(f"Error: {e}\n")
+
+    async def app_apple_initialize(self, discover_if_needed: bool = True):
+        """Discover and initialize Apple ANCS/AMS helper state."""
+        print_section("Apple Services")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=discover_if_needed)
+            if not apple_services:
+                return None
+
+            apple_services.print_status()
+            print("\nProtocol notes:")
+            print("  - ANCS Notification Source sends add/modify/remove summaries.")
+            print("  - ANCS Data Source returns attributes after Control Point requests.")
+            print("  - AMS Remote Command notifications list supported commands.")
+            print("  - AMS Entity Update notifications carry player/queue/track values.")
+            print("  - If an AMS value is truncated, the helper can read the full Entity Attribute value.\n")
+            return apple_services
+        except Exception as e:
+            logger.error(f"Apple service initialization failed: {e}", exc_info=True)
+            print(f"✗ Apple service initialization failed: {e}\n")
+            return None
+
+    async def app_apple_subscribe_ancs(
+        self,
+        *,
+        auto_fetch_details: bool = True,
+        auto_fetch_app_attributes: bool = True,
+    ):
+        """Subscribe to ANCS notification and data source characteristics."""
+        print_section("Apple ANCS Subscribe")
+
+        try:
+            apple_services = await self._ensure_apple_services()
+            if not apple_services or not apple_services.has_ancs():
+                print("ANCS service not available on this device.\n")
+                return
+
+            ok = await apple_services.subscribe_ancs(
+                auto_fetch_details=auto_fetch_details,
+                auto_fetch_app_attributes=auto_fetch_app_attributes,
+            )
+            if ok:
+                print("✓ ANCS subscription active\n")
+            else:
+                print("✗ ANCS subscription failed\n")
+        except Exception as e:
+            logger.error(f"ANCS subscribe failed: {e}", exc_info=True)
+            print(f"✗ ANCS subscribe failed: {e}\n")
+
+    async def app_apple_request_ancs_notification_attributes(self, notification_uid: str):
+        """Request ANCS notification attributes for a notification UID."""
+        print_section("ANCS Notification Attributes")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ancs():
+                print("ANCS service not available.\n")
+                return
+
+            notification_uid_int = int(notification_uid, 0)
+            response = await apple_services.request_recommended_notification_attributes(notification_uid_int)
+            if response is None:
+                print("✗ No ANCS attribute response received\n")
+            else:
+                print()
+        except ValueError as e:
+            print(f"Invalid ANCS notification UID: {e}\n")
+        except Exception as e:
+            logger.error(f"ANCS notification attribute request failed: {e}", exc_info=True)
+            print(f"✗ ANCS notification attribute request failed: {e}\n")
+
+    async def app_apple_request_ancs_app_attributes(self, app_identifier: str):
+        """Request ANCS app attributes for an app identifier."""
+        print_section("ANCS App Attributes")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ancs():
+                print("ANCS service not available.\n")
+                return
+
+            response = await apple_services.request_app_attributes(app_identifier)
+            if response is None:
+                print("✗ No ANCS app attribute response received\n")
+            else:
+                print()
+        except Exception as e:
+            logger.error(f"ANCS app attribute request failed: {e}", exc_info=True)
+            print(f"✗ ANCS app attribute request failed: {e}\n")
+
+    async def app_apple_perform_ancs_action(self, notification_uid: str, action: str):
+        """Perform the ANCS positive or negative action for a notification."""
+        print_section("ANCS Perform Action")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ancs():
+                print("ANCS service not available.\n")
+                return
+
+            notification_uid_int = int(notification_uid, 0)
+            ok = await apple_services.perform_notification_action(notification_uid_int, action)
+            if ok:
+                print("✓ ANCS action sent\n")
+            else:
+                print("✗ Failed to send ANCS action\n")
+        except ValueError as e:
+            print(f"Invalid ANCS action input: {e}\n")
+        except Exception as e:
+            logger.error(f"ANCS action failed: {e}", exc_info=True)
+            print(f"✗ ANCS action failed: {e}\n")
+
+    async def app_apple_subscribe_ams(
+        self,
+        *,
+        register_defaults: bool = True,
+        auto_read_truncated: bool = True,
+    ):
+        """Subscribe to AMS notifications and optionally register defaults."""
+        print_section("Apple AMS Subscribe")
+
+        try:
+            apple_services = await self._ensure_apple_services()
+            if not apple_services or not apple_services.has_ams():
+                print("AMS service not available on this device.\n")
+                return
+
+            ok = await apple_services.subscribe_ams(
+                register_defaults=register_defaults,
+                auto_read_truncated=auto_read_truncated,
+            )
+            if ok:
+                print("✓ AMS subscription active\n")
+            else:
+                print("✗ AMS subscription failed\n")
+        except Exception as e:
+            logger.error(f"AMS subscribe failed: {e}", exc_info=True)
+            print(f"✗ AMS subscribe failed: {e}\n")
+
+    async def app_apple_register_ams_updates(self, entity: str, attributes: List[str]):
+        """Register AMS entity attributes for change notifications."""
+        print_section("AMS Register Entity Updates")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ams():
+                print("AMS service not available.\n")
+                return
+
+            ok = await apple_services.register_ams_entity_updates(entity, attributes)
+            if ok:
+                print("✓ AMS entity update registration sent\n")
+            else:
+                print("✗ AMS entity update registration failed\n")
+        except ValueError as e:
+            print(f"Invalid AMS entity registration input: {e}\n")
+        except Exception as e:
+            logger.error(f"AMS entity registration failed: {e}", exc_info=True)
+            print(f"✗ AMS entity registration failed: {e}\n")
+
+    async def app_apple_read_ams_attribute(self, entity: str, attribute: str):
+        """Read the full AMS Entity Attribute value for one entity/attribute pair."""
+        print_section("AMS Read Entity Attribute")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ams():
+                print("AMS service not available.\n")
+                return
+
+            response = await apple_services.read_ams_entity_attribute(entity, attribute)
+            if response is None:
+                print("✗ AMS entity attribute read failed\n")
+            else:
+                print()
+        except ValueError as e:
+            print(f"Invalid AMS entity attribute input: {e}\n")
+        except Exception as e:
+            logger.error(f"AMS entity attribute read failed: {e}", exc_info=True)
+            print(f"✗ AMS entity attribute read failed: {e}\n")
+
+    async def app_apple_send_ams_command(self, command: str):
+        """Send an AMS remote command."""
+        print_section("AMS Remote Command")
+
+        try:
+            apple_services = await self._ensure_apple_services(discover_if_needed=False)
+            if not apple_services or not apple_services.has_ams():
+                print("AMS service not available.\n")
+                return
+
+            supported_commands = apple_services.get_supported_ams_command_names()
+            if supported_commands:
+                print(f"Known supported AMS commands: {', '.join(supported_commands)}\n")
+            else:
+                print("Known supported AMS commands: waiting for Remote Command notification\n")
+
+            ok = await apple_services.send_ams_remote_command(command)
+            if ok:
+                print("✓ AMS remote command sent\n")
+            else:
+                print("✗ AMS remote command failed\n")
+        except ValueError as e:
+            print(f"Invalid AMS remote command: {e}\n")
+        except Exception as e:
+            logger.error(f"AMS remote command failed: {e}", exc_info=True)
+            print(f"✗ AMS remote command failed: {e}\n")
 
     async def app_burst_write(
         self,
@@ -2651,6 +2905,31 @@ class BLETestingApp:
                 logger.error(f"Pairing error: {e}")
                 print(f"✗ Pairing error: {e}\n")
 
+    async def app_send_security_request(self):
+        """Send an SMP Security Request when acting as the peripheral."""
+        if not self.connected or not self.connector.connected_device:
+            print("✗ Not connected to any device\n")
+            return
+
+        print_section("Send SMP Security Request")
+        print(f"Device: {self.current_device}\n")
+
+        connection = self.connector.connected_device
+        if getattr(connection, "role", None) != Role.PERIPHERAL:
+            print("✗ SMP Security Request is only valid when this side is the peripheral.\n")
+            print("Use advertising/inbound connection mode, then retry this option.\n")
+            logger.warning(
+                "[SECURITY REQUEST] Rejected manual request because local role is not peripheral"
+            )
+            return
+
+        print("Sending SMP Security Request...")
+        if self.connector.send_security_request():
+            print("✓ Security Request sent\n")
+            print("Wait for the peer to respond with encryption or pairing.\n")
+        else:
+            print("✗ Failed to send Security Request\n")
+
     async def app_exchange_mtu(self, mtu_size: int = 247):
         """Exchange ATT MTU with connected peer using event-driven completion."""
         if not self.connected or not self.connector.connected_device:
@@ -2948,6 +3227,7 @@ class BLETestingApp:
             
             self.connected = False
             self.current_device = None
+            self._reset_apple_services()
             print("✓ Disconnected\n")
         except Exception as e:
             logger.error(f"Disconnect failed: {e}")
@@ -2979,46 +3259,52 @@ class BLETestingApp:
                         print("Use app_toggle_hci_snoop(enable=...) directly in non-interactive mode\n")
                     elif choice.lower() == "e":
                         print("Use app_debug_logging(mode=...) directly in non-interactive mode\n")
-                    elif choice.lower() == "s":
-                        await self.app_smp_settings()
                     elif choice == "1":
                         await self.app_scan_devices()
                     elif choice == "2":
                         print("app_connect_device is not available in BLETestingApp\n")
                     elif choice == "3":
-                        await self.app_discover_services()
-                    elif choice == "4":
-                        print("Use app_read_characteristic(handle=...) directly in non-interactive mode\n")
-                    elif choice == "5":
-                        print("Use app_write_characteristic(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "6":
-                        print("Use app_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "7":
-                        print("Use app_subscribe(handle=...) directly in non-interactive mode\n")
-                    elif choice == "8":
-                        print("Use app_subscribe_indications(handle=...) directly in non-interactive mode\n")
-                    elif choice == "9":
-                        await self.app_pair()
-                    elif choice == "10":
-                        print("Use app_unpair(index=... or address=...) directly in non-interactive mode\n")
-                    elif choice == "11":
                         await self.app_disconnect()
-                    elif choice == "12":
+                    elif choice == "21":
+                        await self.app_discover_services()
+                    elif choice == "22":
+                        print("Use app_read_characteristic(handle=...) directly in non-interactive mode\n")
+                    elif choice == "23":
+                        print("Use app_write_characteristic(handle=..., hex_value=...) directly in non-interactive mode\n")
+                    elif choice == "24":
+                        print("Use app_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
+                    elif choice == "25":
+                        print("Use app_subscribe(handle=...) directly in non-interactive mode\n")
+                    elif choice == "26":
+                        print("Use app_subscribe_indications(handle=...) directly in non-interactive mode\n")
+                    elif choice == "27":
                         print("Use app_burst_write(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "13":
+                    elif choice == "28":
                         print("Use app_burst_write_without_response(handle=..., hex_value=...) directly in non-interactive mode\n")
-                    elif choice == "14":
+                    elif choice == "29":
                         await self.app_stop_burst_write()
-                    elif choice == "15":
+                    elif choice == "30":
                         print("Use app_burst_read(handle=...) directly in non-interactive mode\n")
-                    elif choice == "16":
+                    elif choice == "31":
                         await self.app_stop_burst_read()
-                    elif choice == "17":
+                    elif choice == "32":
                         await self.app_start_csv_logging()
-                    elif choice == "18":
+                    elif choice == "33":
                         await self.app_stop_csv_logging()
-                    elif choice == "19":
+                    elif choice == "34":
                         print("Use app_exchange_mtu(mtu_size=...) directly in non-interactive mode\n")
+                    elif choice == "41":
+                        await self.app_pair()
+                    elif choice == "42":
+                        await self.app_send_security_request()
+                    elif choice == "43" or choice.lower() == "s":
+                        await self.app_smp_settings()
+                    elif choice == "44":
+                        print("Use app_unpair(index=... or address=...) directly in non-interactive mode\n")
+                    elif choice == "51":
+                        print("Use advertising menu in interactive mode\n")
+                    elif choice == "61":
+                        print("Use L2CAP menu in interactive mode\n")
                     elif choice == "0":
                         print("\nExiting...")
                         break

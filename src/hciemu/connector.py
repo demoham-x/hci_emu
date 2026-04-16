@@ -898,7 +898,7 @@ class BLEConnector:
         if not self.connected_device or not self.device:
             logger.error("No device connected")
             return False
-        
+
         try:
             logger.info("Checking security status on bonded connection...")
             
@@ -930,6 +930,22 @@ class BLEConnector:
         except Exception as e:
             logger.error(f"Encryption failed: {e}", exc_info=True)
             print(f"[SECURITY] ✗ Encryption failed: {e}")
+            return False
+
+    def send_security_request(self) -> bool:
+        """Send an SMP Security Request on the active connection."""
+        if not self.connected_device:
+            logger.error("No device connected")
+            return False
+
+        try:
+            self.connected_device.request_pairing()
+            logger.info(
+                f"[SECURITY REQUEST] Sent SMP Security Request to {self.connected_device.peer_address}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send SMP Security Request: {e}", exc_info=True)
             return False
     
     async def pair(self) -> bool:
@@ -1378,7 +1394,51 @@ class BLEConnector:
             logger.error(f"Write failed: {e}")
             return False
     
-    async def subscribe_notifications(self, handle: int) -> bool:
+    def get_characteristic_details_by_uuid(self, uuid_str: str) -> Optional[Dict[str, Any]]:
+        """Return discovered characteristic metadata by UUID."""
+        target_uuid = str(uuid_str).lower()
+        for service in self.service_details:
+            service_uuid = str(service.get("uuid", ""))
+            for characteristic in service.get("characteristics", []):
+                if str(characteristic.get("uuid", "")).lower() != target_uuid:
+                    continue
+                details = dict(characteristic)
+                details["service_uuid"] = service_uuid
+                return details
+        return None
+
+    def get_characteristic_handle_by_uuid(self, uuid_str: str) -> Optional[int]:
+        """Return discovered handle for a characteristic UUID."""
+        details = self.get_characteristic_details_by_uuid(uuid_str)
+        if not details:
+            return None
+        return details.get("handle")
+
+    def _run_subscription_callback(
+        self,
+        callback: Optional[Callable[[bytes], Any]],
+        value: bytes,
+        *,
+        handle: int,
+        event_type: str,
+        label: Optional[str],
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            result = callback(value)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
+        except Exception as exc:
+            label_text = label or f"handle 0x{handle:04X}"
+            logger.error(f"{event_type} callback failed for {label_text}: {exc}", exc_info=True)
+
+    async def subscribe_notifications(
+        self,
+        handle: int,
+        callback: Optional[Callable[[bytes], Any]] = None,
+        label: Optional[str] = None,
+    ) -> bool:
         """
         Subscribe to notifications on a characteristic (unacknowledged)
         
@@ -1412,6 +1472,13 @@ class BLEConnector:
                 print(f"\n[NOTIFY] 0x{handle:04X} ({handle}): {value.hex()}")
                 # Log to CSV if enabled
                 self._log_to_csv("NOTIFY", handle, value)
+                self._run_subscription_callback(
+                    callback,
+                    value,
+                    handle=handle,
+                    event_type="notification",
+                    label=label,
+                )
             
             # Subscribe using the proxy (prefer_notify=True means notifications)
             await self.gatt_client.subscribe(char_proxy, notification_handler, prefer_notify=True)
@@ -1435,7 +1502,12 @@ class BLEConnector:
             logger.error(f"Subscribe failed: {e}")
             return False
     
-    async def subscribe_indications(self, handle: int) -> bool:
+    async def subscribe_indications(
+        self,
+        handle: int,
+        callback: Optional[Callable[[bytes], Any]] = None,
+        label: Optional[str] = None,
+    ) -> bool:
         """
         Subscribe to indications on a characteristic (acknowledged)
         
@@ -1469,6 +1541,13 @@ class BLEConnector:
                 print(f"\n[INDICATE] 0x{handle:04X} ({handle}): {value.hex()}")
                 # Log to CSV if enabled
                 self._log_to_csv("INDICATE", handle, value)
+                self._run_subscription_callback(
+                    callback,
+                    value,
+                    handle=handle,
+                    event_type="indication",
+                    label=label,
+                )
             
             # Subscribe using the proxy (prefer_notify=False means indications)
             await self.gatt_client.subscribe(char_proxy, indication_handler, prefer_notify=False)

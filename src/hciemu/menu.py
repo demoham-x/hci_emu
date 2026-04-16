@@ -61,28 +61,35 @@ class BLETestingMenu:
             ("C", "Set Device Filters"),
             ("D", "HCI Snoop Logging (ON)" if self.app.snoop_enabled else "HCI Snoop Logging (OFF)"),
             ("E", f"Debug Logging ({self.app.debug_mode.upper()})"),
-            ("S", "SMP Settings"),
+            ("", "--- Connection / Link (1-20) ---"),
             ("1", "Scan for BLE Devices"),
             ("2", "Connect to Device"),
-            ("3", "Discover GATT Services"),
-            ("4", "Read Characteristic"),
-            ("5", "Write Characteristic"),
-            ("6", "Write Without Response"),
-            ("7", "Subscribe to Notifications"),
-            ("8", "Subscribe to Indications"),
-            ("9", "Pair / Encrypt Connection"),
-            ("10", "Unpair / Delete Bonding"),
-            ("11", "Disconnect"),
-            ("12", "Burst Write (With Response)"),
-            ("13", "Burst Write (Without Response)"),
-            ("14", "Stop Burst Write"),
-            ("15", "Burst Read"),
-            ("16", "Stop Burst Read"),
-            ("17", "Start CSV Logging"),
-            ("18", "Stop CSV Logging"),
-            ("19", "Exchange GATT MTU"),
-            ("20", "L2CAP Operations (CBFC/ECBFC)"),
-            ("21", "Advertising Menu"),
+            ("3", "Disconnect"),
+            ("", "--- ATT / GATT (21-40) ---"),
+            ("21", "Discover GATT Services"),
+            ("22", "Read Characteristic"),
+            ("23", "Write Characteristic"),
+            ("24", "Write Without Response"),
+            ("25", "Subscribe to Notifications"),
+            ("26", "Subscribe to Indications"),
+            ("27", "Burst Write (With Response)"),
+            ("28", "Burst Write (Without Response)"),
+            ("29", "Stop Burst Write"),
+            ("30", "Burst Read"),
+            ("31", "Stop Burst Read"),
+            ("32", "Start CSV Logging"),
+            ("33", "Stop CSV Logging"),
+            ("34", "Exchange GATT MTU"),
+            ("35", "Apple Services (ANCS / AMS)"),
+            ("", "--- SMP (41-50) ---"),
+            ("41", "Pair / Encrypt Connection"),
+            ("42", "Send SMP Security Request"),
+            ("43", "SMP Settings"),
+            ("44", "Unpair / Delete Bonding"),
+            ("", "--- Advertising (51-60) ---"),
+            ("51", "Advertising Menu"),
+            ("", "--- L2CAP (61-80) ---"),
+            ("61", "L2CAP Operations (CBFC/ECBFC)"),
             ("0", "Exit"),
         ]
 
@@ -95,7 +102,10 @@ class BLETestingMenu:
             self.console.print(table)
         else:
             for key, label in entries:
-                print(f"{key}. {label}")
+                if key == "":
+                    print(f"\n{label}")
+                else:
+                    print(f"{key}. {label}")
 
         if self.app.filter_name or self.app.filter_address:
             print()
@@ -328,6 +338,91 @@ class BLETestingMenu:
         print_section("Exchange GATT MTU")
         mtu_size = self._prompt_int("Requested ATT MTU (23-517, default 247): ", default=247)
         await self.app.app_exchange_mtu(mtu_size=mtu_size)
+
+    async def menu_apple_services(self):
+        while True:
+            print_section("Apple Services")
+            print("  1. Initialize / Refresh Apple Services")
+            print("  2. Show Apple Service Status")
+            print("  3. Subscribe ANCS")
+            print("  4. Request ANCS Notification Attributes")
+            print("  5. Request ANCS App Attributes")
+            print("  6. Perform ANCS Action")
+            print("  7. Subscribe AMS")
+            print("  8. Register AMS Entity Updates")
+            print("  9. Read AMS Entity Attribute")
+            print("  10. Send AMS Remote Command")
+            print("  0. Back to Main Menu\n")
+
+            choice = await self._prompt_text_async("Select option: ")
+            if choice == "0":
+                print()
+                return
+
+            if choice == "1":
+                await self.app.app_apple_initialize()
+            elif choice == "2":
+                await self.app.app_apple_initialize(discover_if_needed=False)
+            elif choice == "3":
+                auto_fetch = self._prompt_yes_no(
+                    "Auto request ANCS notification attributes when events arrive? (Y/n): ",
+                    default=True,
+                )
+                auto_fetch_app = self._prompt_yes_no(
+                    "Auto request ANCS app display name after notification attributes? (Y/n): ",
+                    default=True,
+                )
+                await self.app.app_apple_subscribe_ancs(
+                    auto_fetch_details=auto_fetch,
+                    auto_fetch_app_attributes=auto_fetch_app,
+                )
+            elif choice == "4":
+                notification_uid = await self._prompt_text_async("Notification UID (decimal or hex, e.g. 0x12345678): ")
+                await self.app.app_apple_request_ancs_notification_attributes(notification_uid)
+            elif choice == "5":
+                app_identifier = await self._prompt_text_async("App Identifier (for example com.apple.mobilephone): ")
+                if not app_identifier:
+                    print("App identifier is required\n")
+                    continue
+                await self.app.app_apple_request_ancs_app_attributes(app_identifier)
+            elif choice == "6":
+                notification_uid = await self._prompt_text_async("Notification UID (decimal or hex): ")
+                action = await self._prompt_text_async("Action (positive/negative): ")
+                await self.app.app_apple_perform_ancs_action(notification_uid, action)
+            elif choice == "7":
+                register_defaults = self._prompt_yes_no(
+                    "Register default AMS player/queue/track updates after subscribe? (Y/n): ",
+                    default=True,
+                )
+                auto_read_truncated = self._prompt_yes_no(
+                    "Auto read full AMS values when notifications are truncated? (Y/n): ",
+                    default=True,
+                )
+                await self.app.app_apple_subscribe_ams(
+                    register_defaults=register_defaults,
+                    auto_read_truncated=auto_read_truncated,
+                )
+            elif choice == "8":
+                entity = await self._prompt_text_async("Entity (player, queue, track): ")
+                attributes_raw = await self._prompt_text_async(
+                    "Attributes (comma-separated, e.g. name,playback_info or title,artist): "
+                )
+                attributes = [part.strip() for part in attributes_raw.split(",") if part.strip()]
+                if not attributes:
+                    print("At least one AMS attribute is required\n")
+                    continue
+                await self.app.app_apple_register_ams_updates(entity, attributes)
+            elif choice == "9":
+                entity = await self._prompt_text_async("Entity (player, queue, track): ")
+                attribute = await self._prompt_text_async("Attribute: ")
+                await self.app.app_apple_read_ams_attribute(entity, attribute)
+            elif choice == "10":
+                command = await self._prompt_text_async(
+                    "AMS command (play, pause, toggle_play_pause, next_track, previous_track, volume_up, volume_down, skip_forward, skip_backward): "
+                )
+                await self.app.app_apple_send_ams_command(command)
+            else:
+                print("Invalid option\n")
 
     async def menu_l2cap_operations(self):
         while True:
@@ -666,50 +761,54 @@ class BLETestingMenu:
                     await self.menu_toggle_hci_snoop()
                 elif choice.lower() == "e":
                     await self.menu_debug_logging()
-                elif choice.lower() == "s":
-                    await self.menu_smp_settings()
                 elif choice == "1":
                     await self.menu_scan_devices()
                 elif choice == "2":
                     await self.menu_connect_device()
                 elif choice == "3":
-                    await self.app.app_discover_services()
-                elif choice == "4":
-                    await self.menu_read_characteristic()
-                elif choice == "5":
-                    await self.menu_write_characteristic()
-                elif choice == "6":
-                    await self.menu_write_without_response()
-                elif choice == "7":
-                    await self.menu_subscribe()
-                elif choice == "8":
-                    await self.menu_subscribe_indications()
-                elif choice == "9":
-                    await self.app.app_pair()
-                elif choice == "10":
-                    await self.menu_unpair()
-                elif choice == "11":
                     await self.app.app_disconnect()
-                elif choice == "12":
-                    await self.menu_burst_write()
-                elif choice == "13":
-                    await self.menu_burst_write_without_response()
-                elif choice == "14":
-                    await self.app.app_stop_burst_write()
-                elif choice == "15":
-                    await self.menu_burst_read()
-                elif choice == "16":
-                    await self.app.app_stop_burst_read()
-                elif choice == "17":
-                    await self.menu_start_csv_logging()
-                elif choice == "18":
-                    await self.app.app_stop_csv_logging()
-                elif choice == "19":
-                    await self.menu_exchange_mtu()
-                elif choice == "20":
-                    await self.menu_l2cap_operations()
                 elif choice == "21":
+                    await self.app.app_discover_services()
+                elif choice == "22":
+                    await self.menu_read_characteristic()
+                elif choice == "23":
+                    await self.menu_write_characteristic()
+                elif choice == "24":
+                    await self.menu_write_without_response()
+                elif choice == "25":
+                    await self.menu_subscribe()
+                elif choice == "26":
+                    await self.menu_subscribe_indications()
+                elif choice == "27":
+                    await self.menu_burst_write()
+                elif choice == "28":
+                    await self.menu_burst_write_without_response()
+                elif choice == "29":
+                    await self.app.app_stop_burst_write()
+                elif choice == "30":
+                    await self.menu_burst_read()
+                elif choice == "31":
+                    await self.app.app_stop_burst_read()
+                elif choice == "32":
+                    await self.menu_start_csv_logging()
+                elif choice == "33":
+                    await self.app.app_stop_csv_logging()
+                elif choice == "34":
+                    await self.menu_exchange_mtu()
+                elif choice == "35":
+                    await self.menu_apple_services()
+                elif choice == "41":
+                    await self.app.app_pair()
+                elif choice == "42":
+                    await self.app.app_send_security_request()
+                elif choice == "43" or choice.lower() == "s":
+                    await self.menu_smp_settings()
+                elif choice == "44":
+                    await self.menu_unpair()
+                elif choice == "51":
                     await self.menu_advertising()
+                elif choice == "61":
+                    await self.menu_l2cap_operations()
                 elif choice == "0":
                     print("\nExiting...")
                     break
