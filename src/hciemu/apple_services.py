@@ -335,10 +335,9 @@ class AppleServices:
                     f"0x{characteristic.handle:04X} ({characteristic.handle})",
                     characteristic.properties or "-",
                 )
-
-                if self.has_ams():
-                    supported = ", ".join(self.get_supported_ams_command_names()) or "waiting for AMS Remote Command notification"
-                    table.add_row("AMS", "Supported Commands", "-", supported)
+            if label == "AMS":
+                supported = ", ".join(self.get_supported_ams_command_names()) or "waiting for AMS Remote Command notification"
+                table.add_row("AMS", "Supported Commands", "-", supported)
 
         return table
 

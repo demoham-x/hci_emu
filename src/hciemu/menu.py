@@ -102,7 +102,10 @@ class BLETestingMenu:
             self.console.print(table)
         else:
             for key, label in entries:
-                print(f"{key}. {label}")
+                if key == "":
+                    print(f"\n{label}")
+                else:
+                    print(f"{key}. {label}")
 
         if self.app.filter_name or self.app.filter_address:
             print()
@@ -374,17 +377,17 @@ class BLETestingMenu:
                     auto_fetch_app_attributes=auto_fetch_app,
                 )
             elif choice == "4":
-                notification_uid = input("Notification UID (decimal or hex, e.g. 0x12345678): ").strip()
+                notification_uid = await self._prompt_text_async("Notification UID (decimal or hex, e.g. 0x12345678): ")
                 await self.app.app_apple_request_ancs_notification_attributes(notification_uid)
             elif choice == "5":
-                app_identifier = input("App Identifier (for example com.apple.mobilephone): ").strip()
+                app_identifier = await self._prompt_text_async("App Identifier (for example com.apple.mobilephone): ")
                 if not app_identifier:
                     print("App identifier is required\n")
                     continue
                 await self.app.app_apple_request_ancs_app_attributes(app_identifier)
             elif choice == "6":
-                notification_uid = input("Notification UID (decimal or hex): ").strip()
-                action = input("Action (positive/negative): ").strip()
+                notification_uid = await self._prompt_text_async("Notification UID (decimal or hex): ")
+                action = await self._prompt_text_async("Action (positive/negative): ")
                 await self.app.app_apple_perform_ancs_action(notification_uid, action)
             elif choice == "7":
                 register_defaults = self._prompt_yes_no(
@@ -400,23 +403,23 @@ class BLETestingMenu:
                     auto_read_truncated=auto_read_truncated,
                 )
             elif choice == "8":
-                entity = input("Entity (player, queue, track): ").strip()
-                attributes_raw = input(
+                entity = await self._prompt_text_async("Entity (player, queue, track): ")
+                attributes_raw = await self._prompt_text_async(
                     "Attributes (comma-separated, e.g. name,playback_info or title,artist): "
-                ).strip()
+                )
                 attributes = [part.strip() for part in attributes_raw.split(",") if part.strip()]
                 if not attributes:
                     print("At least one AMS attribute is required\n")
                     continue
                 await self.app.app_apple_register_ams_updates(entity, attributes)
             elif choice == "9":
-                entity = input("Entity (player, queue, track): ").strip()
-                attribute = input("Attribute: ").strip()
+                entity = await self._prompt_text_async("Entity (player, queue, track): ")
+                attribute = await self._prompt_text_async("Attribute: ")
                 await self.app.app_apple_read_ams_attribute(entity, attribute)
             elif choice == "10":
-                command = input(
+                command = await self._prompt_text_async(
                     "AMS command (play, pause, toggle_play_pause, next_track, previous_track, volume_up, volume_down, skip_forward, skip_backward): "
-                ).strip()
+                )
                 await self.app.app_apple_send_ams_command(command)
             else:
                 print("Invalid option\n")
