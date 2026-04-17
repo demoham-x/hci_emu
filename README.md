@@ -144,10 +144,15 @@ bumble_hci/
 - **GATT** - Browse services, read/write characteristics
 - **Notify** - Subscribe to characteristic notifications
 
+### Apple Services
+- **ANCS** - Apple Notification Center Service: receive and act on iOS notifications
+- **AMS** - Apple Media Service: monitor and control iOS media playback
+
 ### Security & Bonding
 - **Pairing** - Support for multiple pairing methods
 - **Bonding** - Persistent bond storage (survives restart)
 - **Encryption** - Manual encryption control
+- **SMP Security Request** - Initiate security from the peripheral side
 
 ### HCI Packet Capture
 - **Live Capture** - Real-time HCI packet streaming
@@ -176,13 +181,25 @@ python src/main.py
 
   [1] Scan for BLE Devices
   [2] Connect to Device
-  [3] Browse GATT Services
-  [4] Read Characteristic
-  [5] Write Characteristic
-  [6] Subscribe to Notifications
-  [7] Pair with Device
-  [D] Toggle HCI Capture
-  [Q] Quit
+  [3] Disconnect
+
+  --- ATT / GATT (21-40) ---
+  [21] Discover GATT Services
+  [22] Read Characteristic
+  [23] Write Characteristic
+  [35] Apple Services (ANCS / AMS)
+
+  --- SMP (41-50) ---
+  [41] Pair / Encrypt Connection
+  [42] Send SMP Security Request
+  [43] SMP Settings
+  [44] Unpair / Delete Bonding
+
+  --- Advertising (51-60) ---
+  [51] Advertising Menu
+
+  --- L2CAP (61-80) ---
+  [61] L2CAP Operations (CBFC/ECBFC)
 ```
 
 ### Programmatic Usage

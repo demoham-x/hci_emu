@@ -56,8 +56,36 @@ python src/main.py
 A. Bluetooth On
 1. Scan for BLE Devices
 2. Connect to Device
-3. Discover GATT Services
-...
+3. Disconnect
+
+--- ATT / GATT (21-40) ---
+21. Discover GATT Services
+22. Read Characteristic
+23. Write Characteristic
+24. Write Without Response
+25. Subscribe to Notifications
+26. Subscribe to Indications
+27. Burst Write (With Response)
+28. Burst Write (Without Response)
+29. Stop Burst Write
+30. Burst Read
+31. Stop Burst Read
+32. Start CSV Logging
+33. Stop CSV Logging
+34. Exchange GATT MTU
+35. Apple Services (ANCS / AMS)
+
+--- SMP (41-50) ---
+41. Pair / Encrypt Connection
+42. Send SMP Security Request
+43. SMP Settings
+44. Unpair / Delete Bonding
+
+--- Advertising (51-60) ---
+51. Advertising Menu
+
+--- L2CAP (61-80) ---
+61. L2CAP Operations (CBFC/ECBFC)
 
 Select option:
 ```
@@ -182,9 +210,9 @@ Connecting to 00:60:37:DB:CC:AE/P...
 Connection ready.
 
 Next steps:
-  - Option 9: Encrypt connection (if bonded)
-  - Option 3: Discover GATT Services
-  - Option 11: Disconnect
+  - Option 41: Pair / Encrypt connection
+  - Option 21: Discover GATT Services
+  - Option 3: Disconnect
 ```
 
 **Connection States:**
@@ -197,7 +225,7 @@ Next steps:
 After connecting, discover what the device offers.
 
 **Steps:**
-1. Select **Option 3** - Discover GATT Services
+1. Select **Option 21** - Discover GATT Services
 2. View services, characteristics, and descriptors
 
 **Example Output:**
@@ -223,7 +251,7 @@ After connecting, discover what the device offers.
 
 **Steps:**
 1. Note the handle from service discovery (e.g., 0x0012)
-2. Select **Option 4** - Read Characteristic
+2. Select **Option 22** - Read Characteristic
 3. Enter handle (hex `0x0012` or decimal `18`)
 
 **Example:**
@@ -244,7 +272,7 @@ Enter characteristic handle (hex 0x0054 or decimal 84): 0x12
 ### 6. Writing to a Characteristic
 
 **Steps:**
-1. Select **Option 5** (with response) or **Option 6** (without response)
+1. Select **Option 23** (with response) or **Option 24** (without response)
 2. Enter handle
 3. Enter hex value (e.g., `01020304`)
 
@@ -257,14 +285,14 @@ Enter value (hex, space-separated or continuous): 01 02 03 04
 ```
 
 **When to use each:**
-- **Write (Option 5)**: Confirmation needed, more reliable
-- **Write Without Response (Option 6)**: Faster, no confirmation
+- **Write (Option 23)**: Confirmation needed, more reliable
+- **Write Without Response (Option 24)**: Faster, no confirmation
 
 ### 7. Subscribing to Notifications
 
 **Steps:**
 1. Find characteristic with NOTIFY property
-2. Select **Option 7** - Subscribe to Notifications
+2. Select **Option 25** - Subscribe to Notifications
 3. Enter handle
 
 **What happens:**
@@ -288,7 +316,7 @@ Notifications will be printed when received.
 **Steps:**
 1. Connect to device (Option 2)
 2. If not bonded, pairing may start automatically
-3. Or manually select **Option 9** - Pair / Encrypt Connection
+3. Or manually select **Option 41** - Pair / Encrypt Connection
 
 **Pairing Methods:**
 - **Just Works**: No user interaction needed
@@ -302,12 +330,12 @@ Notifications will be printed when received.
 
 **Managing Bonds:**
 - View bonded devices: Option A (Bluetooth On)
-- Delete bond: Option 10 (Unpair / Delete Bonding)
+- Delete bond: Option 44 (Unpair / Delete Bonding)
 
 ### 9. Disconnecting
 
 **Steps:**
-1. Select **Option 11** - Disconnect
+1. Select **Option 3** - Disconnect
 2. Confirmation shown
 
 ```
@@ -324,7 +352,7 @@ Send multiple writes in rapid succession for stress testing.
 
 **Steps:**
 1. Connect to device
-2. Select **Option 12** (with response) or **Option 13** (without response)
+2. Select **Option 27** (with response) or **Option 28** (without response)
 3. Enter handle, value, count, and interval
 
 **Example:**
@@ -339,7 +367,7 @@ Burst write started in background.
 
 **Monitoring:**
 - Check console for write confirmations
-- Use Option 14 to stop
+- Use Option 29 to stop
 
 **Use cases:**
 - Throughput testing
@@ -351,7 +379,7 @@ Burst write started in background.
 Continuously read from a characteristic.
 
 **Steps:**
-1. Select **Option 15** - Burst Read
+1. Select **Option 30** - Burst Read
 2. Enter handle, count, interval
 3. Choose console printing (y/n)
 
@@ -371,14 +399,14 @@ Burst read started in background.
 ╰────────────────────────────────────────────╯
 ```
 
-**Stop**: Option 16
+**Stop**: Option 31
 
 ### CSV Logging
 
 Log all notifications to CSV file for analysis.
 
 **Steps:**
-1. Select **Option 17** - Start CSV Logging
+1. Select **Option 32** - Start CSV Logging
 2. Enter filename (optional)
 3. Subscribe to characteristics
 4. Notifications logged automatically
@@ -397,7 +425,89 @@ timestamp,handle,value_hex,value_ascii
 2026-02-11 15:04:33.234567,18,65,e
 ```
 
-**Stop**: Option 18
+**Stop**: Option 33
+
+### Apple Services (ANCS / AMS)
+
+The Apple Notification Center Service (ANCS) and Apple Media Service (AMS) are proprietary BLE services exposed by iOS/iPadOS devices when a BLE central subscribes as a trusted accessory.
+
+> **Note:** Accessing ANCS/AMS requires the iOS device to trust the connection. Pair and bond first (Option 41), then proceed with Apple service operations.
+
+Access the Apple Services submenu via **Option 35** from the main menu.
+
+#### Apple Services Submenu
+
+| Option | Description |
+|--------|-------------|
+| 1 | Initialize / Refresh Apple Services |
+| 2 | Show Apple Service Status |
+| 3 | Subscribe ANCS |
+| 4 | Request ANCS Notification Attributes |
+| 5 | Request ANCS App Attributes |
+| 6 | Perform ANCS Action |
+| 7 | Subscribe AMS |
+| 8 | Register AMS Entity Updates |
+| 9 | Read AMS Entity Attribute |
+| 10 | Send AMS Remote Command |
+| 0 | Back to Main Menu |
+
+#### Typical ANCS Workflow
+
+1. Connect and bond with an iOS device (Options 2 → 41)
+2. **Option 35 → 1**: Initialize Apple Services (discovers ANCS/AMS characteristics)
+3. **Option 35 → 3**: Subscribe to ANCS
+   - Optionally enable auto-fetch of notification attributes and app display name when events arrive
+4. Incoming iOS notifications will be printed automatically as they arrive
+
+**Example ANCS notification output:**
+```
+[ANCS] Notification added  uid=0x0000001A  category=incoming_call  flags=[positive_action, negative_action]
+  app_identifier : com.apple.mobilephone
+  title          : John Doe
+  positive_action_label: Accept
+  negative_action_label: Decline
+```
+
+#### Performing ANCS Actions
+
+Use **Option 35 → 6** to perform a positive or negative action for a received notification:
+
+```
+Notification UID (decimal or hex): 0x1A
+Action (positive/negative): positive
+✓ ANCS action sent
+```
+
+#### Typical AMS Workflow
+
+1. Connect and bond with an iOS device
+2. **Option 35 → 1**: Initialize Apple Services
+3. **Option 35 → 7**: Subscribe AMS
+   - Optionally register default player/queue/track entity updates
+   - Optionally enable auto-read for truncated values
+4. Media player state changes (track name, playback state, etc.) will print automatically
+
+**Sending a remote command** (Option 35 → 10):
+
+Available commands: `play`, `pause`, `toggle_play_pause`, `next_track`, `previous_track`, `volume_up`, `volume_down`, `skip_forward`, `skip_backward`
+
+#### Reading an AMS Entity Attribute
+
+Use **Option 35 → 9** to read the current value of a specific media attribute:
+
+```
+Entity (player, queue, track): track
+Attribute: title
+```
+
+#### Registering Custom AMS Entity Updates
+
+Use **Option 35 → 8** to register specific entity attribute subscriptions:
+
+```
+Entity (player, queue, track): player
+Attributes (comma-separated): name, playback_info, volume
+```
 
 ---
 
@@ -548,7 +658,7 @@ Filter for Bluetooth HCI:
 #### "Device is bonded but connection fails"
 
 **Solution:**
-1. Delete bond (Option 10)
+1. Delete bond (Option 44)
 2. Reconnect (Option 2)
 3. Pair fresh
 
@@ -563,7 +673,7 @@ Filter for Bluetooth HCI:
 
 **Solutions:**
 1. Check service discovery for properties
-2. Pair with device (Option 9)
+2. Pair with device (Option 41)
 3. Verify handle number
 
 #### "Failed to write"
@@ -575,8 +685,8 @@ Filter for Bluetooth HCI:
 
 **Solutions:**
 1. Check max write length
-2. Enable encryption (Option 9)
-3. Try write WITHOUT response (Option 6)
+2. Enable encryption (Option 41)
+3. Try write WITHOUT response (Option 24)
 
 ### HCI Bridge Issues
 
@@ -662,7 +772,7 @@ A: In `configs/bumble_bonds.json` in the project directory.
 A: Yes, but keys are tied to Bluetooth address. Copy `configs/bumble_bonds.json` to new machine.
 
 **Q: How do I reset all bonding?**  
-A: Delete `configs/bumble_bonds.json` or use Option 10 to remove specific bonds.
+A: Delete `configs/bumble_bonds.json` or use Option 44 to remove specific bonds.
 
 ### Capture
 
