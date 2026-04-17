@@ -16,6 +16,7 @@ It uses collapsible sections so you can scan signatures quickly and expand only 
 - [Burst Operations](#burst-operations)
 - [CSV Logging](#csv-logging)
 - [SMP and Bonding](#smp-and-bonding)
+- [Apple Services (ANCS / AMS)](#apple-services-ancs--ams)
 - [Optional Menu Runner](#optional-menu-runner)
 - [Internal Helpers](#internal-helpers)
 
@@ -620,6 +621,156 @@ If bonded, verifies/enables encryption. If unbonded, starts pairing.
 Removes a bonded device by either list index or exact address.
 
 </details>
+
+## Apple Services (ANCS / AMS)
+
+These methods interact with Apple Notification Center Service (ANCS) and Apple Media Service (AMS) on connected iOS/iPadOS devices.
+
+All methods require an active, bonded connection. Call `app_apple_initialize()` first to discover ANCS/AMS characteristics.
+
+<details>
+<summary><code>app_apple_initialize(discover_if_needed: bool = True)</code></summary>
+
+Discovers and initializes Apple ANCS/AMS helper state.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `discover_if_needed` | `bool` | No | If `True`, runs GATT discovery automatically when services have not yet been discovered. |
+
+Returns `AppleServices` helper instance, or `None` if neither ANCS nor AMS was found.
+
+</details>
+
+<details>
+<summary><code>app_apple_subscribe_ancs(*, auto_fetch_details: bool = True, auto_fetch_app_attributes: bool = True)</code></summary>
+
+Subscribes to ANCS Notification Source and Data Source characteristics.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `auto_fetch_details` | `bool` | No | Automatically request notification attributes when an ANCS event arrives. |
+| `auto_fetch_app_attributes` | `bool` | No | Automatically fetch app display name after notification attributes are received. |
+
+</details>
+
+<details>
+<summary><code>app_apple_request_ancs_notification_attributes(notification_uid: str)</code></summary>
+
+Requests ANCS notification attributes for a specific notification UID.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `notification_uid` | `str` | Yes | Notification UID as decimal or hex string (e.g. `"26"` or `"0x1A"`). |
+
+</details>
+
+<details>
+<summary><code>app_apple_request_ancs_app_attributes(app_identifier: str)</code></summary>
+
+Requests ANCS app attributes for a given app bundle identifier.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `app_identifier` | `str` | Yes | iOS app bundle ID, for example `"com.apple.mobilephone"`. |
+
+</details>
+
+<details>
+<summary><code>app_apple_perform_ancs_action(notification_uid: str, action: str)</code></summary>
+
+Performs the ANCS positive or negative action for a notification.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `notification_uid` | `str` | Yes | Notification UID as decimal or hex string. |
+| `action` | `str` | Yes | `"positive"` or `"negative"`. |
+
+</details>
+
+<details>
+<summary><code>app_apple_subscribe_ams(*, register_defaults: bool = True, auto_read_truncated: bool = True)</code></summary>
+
+Subscribes to AMS Remote Command and Entity Update notifications.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `register_defaults` | `bool` | No | Register default player/queue/track entity update subscriptions after subscribing. |
+| `auto_read_truncated` | `bool` | No | Automatically read the full Entity Attribute value when an AMS notification is truncated. |
+
+</details>
+
+<details>
+<summary><code>app_apple_register_ams_updates(entity: str, attributes: List[str])</code></summary>
+
+Registers AMS Entity Update subscriptions for specific attributes.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `entity` | `str` | Yes | AMS entity: `"player"`, `"queue"`, or `"track"`. |
+| `attributes` | `List[str]` | Yes | Attribute names to subscribe to (e.g. `["name", "playback_info", "volume"]` for player, `["title", "artist", "album"]` for track). |
+
+</details>
+
+<details>
+<summary><code>app_apple_read_ams_attribute(entity: str, attribute: str)</code></summary>
+
+Reads the current value of an AMS Entity Attribute.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `entity` | `str` | Yes | AMS entity: `"player"`, `"queue"`, or `"track"`. |
+| `attribute` | `str` | Yes | Attribute name to read. |
+
+</details>
+
+<details>
+<summary><code>app_apple_send_ams_command(command: str)</code></summary>
+
+Sends an AMS Remote Command to control media playback.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `command` | `str` | Yes | Command name. Supported values: `play`, `pause`, `toggle_play_pause`, `next_track`, `previous_track`, `volume_up`, `volume_down`, `skip_forward`, `skip_backward`. |
+
+</details>
+
+### Apple Services Script Example
+
+```python
+import asyncio
+from src.app import BLETestingApp
+
+
+async def main():
+    app = BLETestingApp("tcp-client:127.0.0.1:9001")
+
+    await app.app_bluetooth_on()
+    await app.connect("AA:BB:CC:DD:EE:FF", timeout=30.0)
+    await app.app_pair()
+
+    # Initialize Apple services
+    apple = await app.app_apple_initialize()
+    if not apple:
+        print("No Apple services found")
+        return
+
+    # Subscribe to ANCS
+    await app.app_apple_subscribe_ancs(auto_fetch_details=True)
+
+    # Subscribe to AMS and send a command
+    await app.app_apple_subscribe_ams(register_defaults=True)
+    await app.app_apple_send_ams_command("next_track")
+
+    # Read current track title
+    await app.app_apple_read_ams_attribute("track", "title")
+
+    await app.app_disconnect()
+    await app.app_bluetooth_off()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
 
 ## Optional Menu Runner
 

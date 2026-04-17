@@ -488,11 +488,35 @@ success = await connector.write_without_response(0x0020, b'\x01\x02\x03')
 ```
 Write value without waiting for response.
 
-**subscribe_notifications(handle: int) → bool**
+**subscribe_notifications(handle: int, callback: Optional[Callable[[bytes], Any]] = None, label: Optional[str] = None) → bool**
 ```python
-success = await connector.subscribe_notifications(0x0012)
+success = await connector.subscribe_notifications(0x0012, callback=my_handler, label="Battery")
 ```
-Subscribe to notifications from characteristic.
+Subscribe to notifications from characteristic. Optional `callback` is invoked (sync or async) for each notification value. `label` is used in error messages.
+
+**subscribe_indications(handle: int, callback: Optional[Callable[[bytes], Any]] = None, label: Optional[str] = None) → bool**
+```python
+success = await connector.subscribe_indications(0x0013, callback=my_handler)
+```
+Subscribe to indications from characteristic.
+
+**send_security_request() → bool**
+```python
+success = connector.send_security_request()
+```
+Send an SMP Security Request on the active connection. Used to prompt the central to initiate pairing or encryption.
+
+**get_characteristic_details_by_uuid(uuid_str: str) → Optional[Dict]**
+```python
+details = connector.get_characteristic_details_by_uuid("2A19")
+```
+Return discovered characteristic metadata dict (including `handle` and `service_uuid`) for the first characteristic matching `uuid_str`. Returns `None` if not found or services not yet discovered.
+
+**get_characteristic_handle_by_uuid(uuid_str: str) → Optional[int]**
+```python
+handle = connector.get_characteristic_handle_by_uuid("2A19")
+```
+Convenience wrapper returning the handle integer only.
 
 **pair() → bool**
 ```python

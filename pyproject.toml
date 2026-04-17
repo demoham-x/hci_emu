@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "HCIEMU"
-version = "1.1.00"
+version = "1.2.0"
 description = "BLE testing toolkit built on Bumble with interactive menu, GATT ops, and HCI capture"
 readme = "README.md"
 requires-python = ">=3.8"
