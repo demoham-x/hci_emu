@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Optional, List
+from typing import Any, Dict, Optional, List, Callable
 import os
 from bumble.hci import Role
 
@@ -125,9 +125,92 @@ class BLETestingApp:
         self._security_request_task = None
         self._pairing_task = None
         self._pairing_in_progress = False
+        self._status_callback: Optional[Callable[[str], None]] = None
+        self._connection_status_callback: Optional[Callable[[Optional[str]], None]] = None
+        self._advertising_state_callback: Optional[Callable[[bool], None]] = None
         self._print_active_paths()
         self._load_ui_config()
         self._configure_debug_logging(self.debug_mode, persist=False)
+
+    def set_status_callback(self, callback: Optional[Callable[[str], None]]) -> None:
+        """Set optional callback for user-visible status lines."""
+        self._status_callback = callback
+
+    def _emit_status(self, message: str) -> None:
+        """Print status to CLI and optionally forward it to GUI."""
+        print(message)
+        if self._status_callback is not None:
+            try:
+                self._status_callback(message)
+            except Exception as exc:
+                logger.debug(f"[STATUS CALLBACK] failed: {exc}")
+
+    def set_connection_status_callback(
+        self, callback: Optional[Callable[[Optional[str]], None]]
+    ) -> None:
+        """Set optional callback for connection status updates.
+
+        The callback receives a peer address when connected, otherwise None.
+        """
+        self._connection_status_callback = callback
+
+    def _emit_connection_status(self, peer_address: Optional[str]) -> None:
+        """Forward connection status to GUI when callback is configured."""
+        if self._connection_status_callback is not None:
+            try:
+                self._connection_status_callback(peer_address)
+            except Exception as exc:
+                logger.debug(f"[CONNECTION STATUS CALLBACK] failed: {exc}")
+
+    def set_advertising_state_callback(
+        self, callback: Optional[Callable[[bool], None]]
+    ) -> None:
+        """Set optional callback for advertising on/off state changes."""
+        self._advertising_state_callback = callback
+
+    def _emit_advertising_state(self, running: bool) -> None:
+        """Forward advertising state to GUI when callback is configured."""
+        if self._advertising_state_callback is not None:
+            try:
+                self._advertising_state_callback(running)
+            except Exception as exc:
+                logger.debug(f"[ADV STATE CALLBACK] failed: {exc}")
+
+    def _build_gatt_value_payload(self, handle: int, value: bytes) -> Dict[str, Any]:
+        details = self.connector.get_characteristic_details_by_handle(handle) or {}
+        read_uuid = str(details.get("uuid") or "")
+        read_description = ""
+        if read_uuid:
+            try:
+                read_description = self._lookup_uuid_name(read_uuid) or ""
+            except Exception:
+                read_description = ""
+
+        ascii_val = value.decode("utf-8", errors="replace")
+        printable_ascii = "".join(
+            c if c.isprintable() or c in "\n\r\t" else "." for c in ascii_val
+        )
+
+        return {
+            "handle": handle,
+            "uuid": read_uuid,
+            "service_uuid": str(details.get("service_uuid") or ""),
+            "description": read_description,
+            "hex": value.hex(),
+            "ascii": printable_ascii,
+            "length": len(value),
+        }
+
+    def _emit_gatt_packet_status(self, event_type: str, handle: int, value: bytes) -> None:
+        if self._status_callback is None:
+            return
+
+        payload = self._build_gatt_value_payload(handle, value)
+        payload["event_type"] = event_type
+        try:
+            self._status_callback(f"[GATT_PACKET_JSON] {json.dumps(payload, ensure_ascii=True)}")
+        except Exception as exc:
+            logger.debug(f"[STATUS CALLBACK] failed: {exc}")
 
     def _print_active_paths(self) -> None:
         mode = "repo" if is_repo_checkout() else "installed-package"
@@ -244,6 +327,11 @@ class BLETestingApp:
             self.connector.connected_device = connection
             self.connected = True
             self.current_device = str(connection.peer_address)
+            self._emit_connection_status(self.current_device)
+            # Bumble stops advertising automatically on inbound connection
+            if self.advertising:
+                self.advertising = False
+                self._emit_advertising_state(False)
             logger.info(f"[CONNECTION] Successfully established to {connection.peer_address}")
             print(f"\n[CONNECTION] Established to {connection.peer_address}")
             # Run post-connection setup for both outbound (menu connect) and
@@ -259,6 +347,7 @@ class BLETestingApp:
             self.connected = False
             self.current_device = None
             self.connector.connected_device = None
+            self._emit_connection_status(None)
             self._reset_apple_services()
             self._connect_in_progress = False
             self._connect_target_address = None
@@ -294,6 +383,7 @@ class BLETestingApp:
             self.connected = False
             self.current_device = None
             self.connector.connected_device = None
+            self._emit_connection_status(None)
             self.connector.reset_connection_mtu_state()
             self._reset_apple_services()
 
@@ -324,12 +414,12 @@ class BLETestingApp:
         """Handle LE pairing_start event."""
         self._pairing_in_progress = True
         logger.info(f"[PAIRING EVENT] pairing_start: {args!r}")
-        print("[PAIRING] Started")
+        self._emit_status("[PAIRING] Started")
 
     def _on_connection_encryption_change(self, *args):
         """Handle LE connection_encryption_change event."""
         logger.info(f"[SECURITY EVENT] connection_encryption_change: {args!r}")
-        print("[SECURITY] Encryption state changed")
+        self._emit_status("[SECURITY] Encryption state changed")
 
     def _on_connection_encryption_failure(self, *args):
         """Handle LE connection_encryption_failure event."""
@@ -350,7 +440,7 @@ class BLETestingApp:
         """Handle LE pairing completion event."""
         self._pairing_in_progress = False
         logger.info(f"[PAIRING EVENT] pairing: {args!r}")
-        print("[PAIRING] Completed")
+        self._emit_status("[PAIRING] Completed")
 
     def _on_pairing_failure(self, *args):
         """Handle LE pairing failure event."""
@@ -996,6 +1086,7 @@ class BLETestingApp:
             else:
                 print("[ADV] Local name enabled but no space left in adv/scan-response payload")
         self.advertising = True
+        self._emit_advertising_state(True)
 
     def _format_advertisement_details(self, adv):
         from bumble.core import AdvertisingData, UUID
@@ -1715,6 +1806,7 @@ class BLETestingApp:
                 except Exception:
                     pass
                 self.advertising = False
+            self._emit_advertising_state(False)
             await self._close_scan_device()
             print("✓ Bluetooth is OFF\n")
         except Exception as e:
@@ -1844,11 +1936,13 @@ class BLETestingApp:
         try:
             if self._scan_device is None:
                 self.advertising = False
+                self._emit_advertising_state(False)
                 print("Advertising is not running\n")
                 return
 
             await self._scan_device.stop_advertising()
             self.advertising = False
+            self._emit_advertising_state(False)
             print("✓ Advertising stopped\n")
         except Exception as e:
             logger.error(f"Stop advertising error: {e}")
@@ -1858,18 +1952,18 @@ class BLETestingApp:
         """Discover GATT services"""
         if not self.connected:
             print("✗ Not connected to any device\n")
-            return
+            return []
         
         print_section("Discovering GATT Services")
         print(f"Device: {self.current_device}\n")
         
         # Always do fresh discovery for this standalone option
         services = await self.connector.discover_services(force_fresh=True)
+        details = self.connector.service_details
         apple_services = self._refresh_apple_services()
 
         if services:
             if HAS_RICH and console:
-                details = self.connector.service_details
                 table = Table(
                     title="BLE Services & Characteristics",
                     box=box.MINIMAL_HEAVY_HEAD,
@@ -1964,6 +2058,7 @@ class BLETestingApp:
         else:
             print("No services found")
         print()
+        return details
 
     async def _maybe_show_discovery_table(self, operation: str = "read", show_table: bool = False):
         """Optionally show characteristics table for the operation."""
@@ -2075,6 +2170,27 @@ class BLETestingApp:
 
     def _print_read_value(self, handle: int, value: bytes, title: Optional[str] = None):
         """Print read result in the same format as app_read_characteristic."""
+        read_uuid = ""
+        read_description = ""
+        for service in self.connector.service_details or []:
+            for char in service.get("characteristics", []):
+                if char.get("handle") != handle:
+                    continue
+                read_uuid = str(char.get("uuid", ""))
+                read_description = self._lookup_uuid_name(read_uuid) or ""
+                break
+            if read_uuid:
+                break
+
+        payload = self._build_gatt_value_payload(handle, value)
+        if self._status_callback is not None:
+            try:
+                self._status_callback(
+                    f"[READ_RESPONSE_JSON] {json.dumps(payload, ensure_ascii=True)}"
+                )
+            except Exception as exc:
+                logger.debug(f"[STATUS CALLBACK] failed: {exc}")
+
         if HAS_RICH and console:
             table = Table(
                 title=title or f"Read Result - Handle 0x{handle:04X}",
@@ -2090,11 +2206,7 @@ class BLETestingApp:
             table.add_row("Hex", value.hex())
             table.add_row("Hex (spaced)", " ".join(f"{b:02x}" for b in value))
 
-            ascii_val = value.decode("utf-8", errors="replace")
-            printable_ascii = "".join(
-                c if c.isprintable() or c in "\n\r\t" else "." for c in ascii_val
-            )
-            table.add_row("ASCII", printable_ascii)
+            table.add_row("ASCII", str(payload.get("ascii", "")))
 
             if len(value) == 1:
                 table.add_row("Uint8", str(value[0]))
@@ -2147,7 +2259,7 @@ class BLETestingApp:
             logger.error(f"Error: {e}")
         
         print()
-    
+
     async def app_write_characteristic(self, handle: str, hex_value: str, show_table: bool = False):
         """Write to characteristic without interactive prompts.
 
@@ -2229,7 +2341,10 @@ class BLETestingApp:
             await self._maybe_show_discovery_table("notify", show_table=show_table)
             handle = self._parse_handle(handle)
             
-            if await self.connector.subscribe_notifications(handle):
+            if await self.connector.subscribe_notifications(
+                handle,
+                callback=lambda value, h=handle: self._emit_gatt_packet_status("notification", h, value),
+            ):
                 print(f"\n✓ Subscribed to notifications on handle 0x{handle:04X} ({handle})")
                 print("Notifications will be printed when received.\n")
             else:
@@ -2257,12 +2372,35 @@ class BLETestingApp:
             await self._maybe_show_discovery_table("indicate", show_table=show_table)
             handle = self._parse_handle(handle)
             
-            if await self.connector.subscribe_indications(handle):
+            if await self.connector.subscribe_indications(
+                handle,
+                callback=lambda value, h=handle: self._emit_gatt_packet_status("indication", h, value),
+            ):
                 print(f"\n✓ Subscribed to indications on handle 0x{handle:04X} ({handle})")
                 print("Indications will be printed when received.\n")
             else:
                 print(f"\n✗ Failed to subscribe to handle 0x{handle:04X} ({handle})\n")
                 
+        except ValueError:
+            print("Invalid handle\n")
+        except Exception as e:
+            logger.error(f"Error: {e}\n")
+
+    async def app_unsubscribe(self, handle: str):
+        """Unsubscribe from notifications or indications on a characteristic."""
+        if not self.connected:
+            print("✗ Not connected to any device\n")
+            return
+
+        print_section("Unsubscribe")
+
+        try:
+            handle = self._parse_handle(handle)
+
+            if await self.connector.unsubscribe(handle):
+                print(f"\n✓ Unsubscribed from handle 0x{handle:04X} ({handle})\n")
+            else:
+                print(f"\n✗ Failed to unsubscribe from handle 0x{handle:04X} ({handle})\n")
         except ValueError:
             print("Invalid handle\n")
         except Exception as e:
@@ -2925,8 +3063,8 @@ class BLETestingApp:
 
         print("Sending SMP Security Request...")
         if self.connector.send_security_request():
-            print("✓ Security Request sent\n")
-            print("Wait for the peer to respond with encryption or pairing.\n")
+            self._emit_status("✓ Security Request sent")
+            self._emit_status("Wait for the peer to respond with encryption or pairing.")
         else:
             print("✗ Failed to send Security Request\n")
 
@@ -3228,6 +3366,7 @@ class BLETestingApp:
             self.connected = False
             self.current_device = None
             self._reset_apple_services()
+            self._emit_connection_status(None)
             print("✓ Disconnected\n")
         except Exception as e:
             logger.error(f"Disconnect failed: {e}")

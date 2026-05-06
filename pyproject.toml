@@ -36,6 +36,7 @@ bumble-hci-menu = "hciemu.main:run_cli"
 hciemu = "hciemu.main:run_cli"
 HCI = "hciemu.main:run_cli"
 BRIDGE = "hciemu.main:run_bridge_cli"
+hciemu-gui = "hciemu.gui.main:run_gui"
 
 [tool.setuptools]
 script-files = ["HCI.bat", "BRIDGE.bat"]
