@@ -112,8 +112,9 @@ class HCIEMUGui(tk.Tk):
 
         self.bridge_source_var = tk.StringVar(value="usb:0")
         self.bridge_target_var = tk.StringVar(value="tcp-server:127.0.0.1:9001")
-        self.bridge_status_var = tk.StringVar(value="Stopped")
+        self.bridge_status_var = tk.StringVar(value="Bridge: Stopped")
         self.connection_status_var = tk.StringVar(value="Disconnected")
+        self.connection_address_var = tk.StringVar(value="BD_ADDR: --")
         self.security_pair_var = tk.StringVar(value="Pair: No")
         self.security_auth_var = tk.StringVar(value="Auth: No")
 
@@ -125,7 +126,7 @@ class HCIEMUGui(tk.Tk):
         self.adv_scan_rsp_hex_var = tk.StringVar()
         self.adv_name_enabled_var = tk.BooleanVar(value=True)
         self.adv_custom_name_var = tk.StringVar()
-        self.adv_status_var = tk.StringVar(value="Stopped")
+        self.adv_status_var = tk.StringVar(value="Advertising: Stopped")
 
         # Settings vars â€” ui_config
         self.cfg_filter_name = tk.StringVar()
@@ -154,12 +155,18 @@ class HCIEMUGui(tk.Tk):
         self._pages: Dict[str, tk.Frame] = {}
         self._nav_labels: Dict[str, tk.Label] = {}
         self._activity_buttons: Dict[str, tk.Label] = {}
+        self._editor_tabs: Dict[str, tk.Label] = {}
         self._active_page: str = ""
         self._editor_tab_var = tk.StringVar(value="")
         self._editor_context_var = tk.StringVar(value="")
         self._active_panel_var = tk.StringVar(value="scan")
+        self._status_left_var = tk.StringVar(value="HCIEMU")
+        self._status_right_var = tk.StringVar(value="Ready")
+        self._page_canvas: Optional[tk.Canvas] = None
+        self._page_canvas_window: Optional[int] = None
         self._conn_status_value_label: Optional[tk.Label] = None
         self._sidebar_conn_status_label: Optional[tk.Label] = None
+        self._sidebar_conn_address_label: Optional[tk.Label] = None
         self._bridge_status_label: Optional[tk.Label] = None
         self._adv_status_label: Optional[tk.Label] = None
         self._pair_status_label: Optional[tk.Label] = None
@@ -170,6 +177,7 @@ class HCIEMUGui(tk.Tk):
         self.adv_status_var.trace_add("write", self._on_adv_status_var_changed)
         self.bridge_status_var.trace_add("write", self._on_bridge_status_var_changed)
 
+        self.option_add("*tearOff", False)
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -184,39 +192,53 @@ class HCIEMUGui(tk.Tk):
         from hciemu.gui.pages.advertiser import AdvertiserPage
         from hciemu.gui.pages.settings import SettingsPage
 
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=0)   # header
-        self.rowconfigure(1, weight=0)   # status bar
-        self.rowconfigure(2, weight=1)   # paned area
+        self._build_menubar()
 
-        # Header bar
-        hdr = tk.Frame(self, background=SIDEBAR_BG, height=64, highlightthickness=0)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=0)   # command strip
+        self.rowconfigure(1, weight=0)   # action strip
+        self.rowconfigure(2, weight=1)   # paned area
+        self.rowconfigure(3, weight=0)   # status bar
+
+        # Command/title strip
+        hdr = tk.Frame(self, background=SIDEBAR_BG, height=42, highlightthickness=0)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_propagate(False)
         hdr.columnconfigure(1, weight=1)
+        hdr.columnconfigure(2, weight=0)
 
         brand = tk.Frame(hdr, background=SIDEBAR_BG)
-        brand.grid(row=0, column=0, sticky="w", padx=(18, 22))
+        brand.grid(row=0, column=0, sticky="w", padx=(12, 14))
         tk.Label(brand, text="HCIEMU", font=("Segoe UI Semibold", 15),
-                 bg=SIDEBAR_BG, fg=TEXT).pack(anchor="w")
-        tk.Label(brand, text="BLE workbench", font=("Segoe UI", 9),
-                 bg=SIDEBAR_BG, fg=TEXT_MUTED).pack(anchor="w")
+                 bg=SIDEBAR_BG, fg=TEXT).pack(side=tk.LEFT)
 
-        transport_group = tk.Frame(hdr, background=SIDEBAR_BG)
-        transport_group.grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=10)
-        transport_group.columnconfigure(1, weight=1)
-        tk.Label(transport_group, text="TRANSPORT", bg=SIDEBAR_BG,
-                 fg=TEXT_MUTED, font=("Segoe UI Semibold", 8)).grid(
-                     row=0, column=0, sticky="w", padx=(0, 10))
-        tk.Entry(transport_group, textvariable=self.transport_var,
+        command_bar = tk.Frame(hdr, background=SIDEBAR_BG)
+        command_bar.grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=6)
+        command_bar.columnconfigure(1, weight=1)
+        tk.Label(command_bar, text="<", bg=SIDEBAR_BG, fg=TEXT_MUTED,
+                 font=("Segoe UI Symbol", 10), padx=8).grid(row=0, column=0)
+        command_card = tk.Frame(command_bar, background=ENTRY_BG, highlightthickness=1,
+                                highlightbackground=CARD_BORDER)
+        command_card.grid(row=0, column=1, sticky="ew", padx=(4, 4), ipady=4)
+        command_card.columnconfigure(1, weight=1)
+        tk.Label(command_card, text="Search", bg=ENTRY_BG, fg=TEXT_MUTED,
+                 font=("Segoe UI", 9), padx=10).grid(row=0, column=0, sticky="w")
+        tk.Entry(command_card, textvariable=self.transport_var,
                  bg=ENTRY_BG, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", bd=0, highlightthickness=1,
-                 highlightbackground=CARD_BORDER, highlightcolor=ACCENT).grid(
-                     row=0, column=1, sticky="ew", ipady=7)
+                 relief="flat", bd=0, highlightthickness=0).grid(
+                     row=0, column=1, sticky="ew", ipady=3, padx=(0, 8))
+        tk.Label(command_bar, text=">", bg=SIDEBAR_BG, fg=TEXT_MUTED,
+                 font=("Segoe UI Symbol", 10), padx=8).grid(row=0, column=2)
+
+        window_tools = tk.Frame(hdr, background=SIDEBAR_BG)
+        window_tools.grid(row=0, column=2, sticky="e", padx=(0, 8))
+        for glyph in ("□", "◱", "×"):
+            tk.Label(window_tools, text=glyph, bg=SIDEBAR_BG, fg=TEXT_MUTED,
+                     font=("Segoe UI Symbol", 10), width=3, pady=4).pack(side=tk.LEFT)
 
         bar = tk.Frame(self, background=CARD_BG, height=56, highlightthickness=1,
                        highlightbackground=CARD_BORDER)
-        bar.grid(row=1, column=0, sticky="ew", padx=14, pady=(10, 0))
+        bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 0))
         bar.grid_propagate(False)
         bar.columnconfigure(0, weight=1)
 
@@ -323,28 +345,33 @@ class HCIEMUGui(tk.Tk):
                                 opaqueresize=True)
         paned.grid(row=2, column=0, sticky="nsew")
 
-        # Top pane: sidebar + content side by side
+        # Top pane: navigation rail + content side by side
         top_pane = tk.Frame(paned, background=BG)
         paned.add(top_pane, stretch="always", minsize=300)
+        top_pane.columnconfigure(1, weight=1)
+        top_pane.rowconfigure(0, weight=1)
 
         # Activity bar + sidebar (inside top_pane)
-        activity_bar = tk.Frame(top_pane, background=SIDEBAR_BG, width=54)
-        activity_bar.pack(side=tk.LEFT, fill=tk.Y)
+        activity_bar = tk.Frame(top_pane, background=SIDEBAR_BG, width=152)
+        activity_bar.grid(row=0, column=0, sticky="ns")
         activity_bar.pack_propagate(False)
 
         activity_top = tk.Frame(activity_bar, background=SIDEBAR_BG)
         activity_top.pack(fill=tk.X, pady=(10, 6))
-        tk.Label(activity_top, text="HC", bg=SIDEBAR_BG, fg=TEXT,
-                 font=("Segoe UI Semibold", 10), pady=8).pack(fill=tk.X)
+        tk.Label(activity_top, text="HCIEMU", bg=SIDEBAR_BG, fg=TEXT,
+                 font=("Segoe UI Semibold", 10), anchor="w",
+                 padx=12, pady=8).pack(fill=tk.X)
 
         for key, glyph, label in _NAV:
             btn = tk.Label(
                 activity_bar,
-                text=glyph,
+                text=label,
                 bg=SIDEBAR_BG,
                 fg=SIDEBAR_TEXT,
-                font=("Segoe UI Semibold", 10),
-                width=4,
+                font=("Segoe UI", 9),
+                anchor="w",
+                justify=tk.LEFT,
+                padx=12,
                 pady=10,
                 cursor="hand2",
             )
@@ -360,60 +387,16 @@ class HCIEMUGui(tk.Tk):
         tk.Label(activity_bottom, text="LOG", bg=SIDEBAR_BG, fg=TEXT_MUTED,
                  font=("Segoe UI", 8), pady=8).pack(fill=tk.X)
 
-        sidebar = tk.Frame(top_pane, background=CARD_BG, width=232,
-                           highlightthickness=1, highlightbackground=CARD_BORDER)
-        sidebar.pack(side=tk.LEFT, fill=tk.Y)
-        sidebar.pack_propagate(False)
-
-        tk.Label(sidebar, text="EXPLORER", bg=CARD_BG, fg=TEXT_MUTED,
-                 font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=14, pady=(10, 6))
-
-        workspace_card = tk.Frame(sidebar, background=CARD_BG)
-        workspace_card.pack(fill=tk.X, padx=12, pady=(0, 8))
-        tk.Label(workspace_card, text="HCIEMU", bg=CARD_BG, fg=TEXT,
-                 font=("Segoe UI Semibold", 10)).pack(anchor="w")
-        tk.Label(workspace_card, text="Bluetooth workbench", bg=CARD_BG, fg=TEXT_MUTED,
-             font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
-
-        status_card = tk.Frame(sidebar, background=CARD_BG, highlightthickness=1,
-                               highlightbackground=CARD_BORDER)
-        status_card.pack(fill=tk.X, padx=12, pady=(12, 8))
-
-        tk.Label(status_card, text="CONNECTION", bg=CARD_BG, fg=TEXT_MUTED,
-                 font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=10, pady=(8, 2))
-
-        self._sidebar_conn_status_label = tk.Label(
-            status_card,
-            textvariable=self.connection_status_var,
-            bg=CARD_BG,
-            fg=TEXT_MUTED,
-            font=("Consolas", 9),
-            anchor="w",
-            justify=tk.LEFT,
-        )
-        self._sidebar_conn_status_label.pack(anchor="w", fill=tk.X, padx=10, pady=(0, 8))
-
-        tk.Label(sidebar, text="OPEN EDITORS",
-                 bg=CARD_BG, fg=TEXT_MUTED,
-                 font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=16, pady=(18, 4))
-
-        for key, _glyph, label in _NAV:
-            lbl = tk.Label(sidebar, text=label, bg=CARD_BG, fg=SIDEBAR_TEXT,
-                           font=("Segoe UI", 10), anchor="w", cursor="hand2",
-                           padx=16, pady=8)
-            lbl.pack(fill=tk.X, padx=8)
-            lbl.bind("<Button-1>", lambda _e, k=key: self._show_page(k))
-            lbl.bind("<Enter>", lambda _e, w=lbl: w.configure(
-                bg=SIDEBAR_HOVER if w.cget("bg") != SIDEBAR_SEL else SIDEBAR_SEL))
-            lbl.bind("<Leave>", lambda _e, w=lbl, k=key: w.configure(
-                bg=SIDEBAR_SEL if self._active_page == k else CARD_BG))
-            self._nav_labels[key] = lbl
-
         # Content area (inside top_pane)
-        content = tk.Frame(top_pane, background=BG)
-        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        shell = tk.Frame(top_pane, background=BG)
+        shell.grid(row=0, column=1, sticky="nsew")
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+
+        content = tk.Frame(shell, background=BG)
+        content.grid(row=0, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(1, weight=1)
+        content.rowconfigure(2, weight=1)
 
         editor_bar = tk.Frame(content, background=CARD_BG, height=36,
                               highlightthickness=1, highlightbackground=CARD_BORDER)
@@ -423,18 +406,53 @@ class HCIEMUGui(tk.Tk):
 
         tab_frame = tk.Frame(editor_bar, background=SIDEBAR_BG)
         tab_frame.grid(row=0, column=0, sticky="w")
-        tk.Label(tab_frame, textvariable=self._editor_tab_var, bg=BG, fg=TEXT,
-                 font=("Segoe UI", 10), padx=14, pady=9).pack(side=tk.LEFT)
-        tk.Frame(tab_frame, width=1, bg=CARD_BORDER, height=36).pack(side=tk.LEFT, fill=tk.Y)
+        for key, _glyph, label in _NAV:
+            tab = tk.Label(
+                tab_frame,
+                text=label,
+                bg=CARD_BG,
+                fg=TEXT_MUTED,
+                font=("Segoe UI", 9),
+                padx=14,
+                pady=9,
+                cursor="hand2",
+            )
+            tab.pack(side=tk.LEFT, padx=(0, 1))
+            tab.bind("<Button-1>", lambda _e, k=key: self._show_page(k))
+            self._editor_tabs[key] = tab
 
-        tk.Label(editor_bar, textvariable=self._editor_context_var, bg=CARD_BG,
-                 fg=TEXT_MUTED, font=("Segoe UI", 9)).grid(
-                     row=0, column=1, sticky="w", padx=(14, 0))
+        breadcrumb = tk.Frame(content, background=BG, height=28)
+        breadcrumb.grid(row=1, column=0, sticky="ew")
+        breadcrumb.grid_propagate(False)
+        tk.Label(breadcrumb, textvariable=self._editor_context_var, bg=BG,
+                 fg=TEXT_MUTED, font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(14, 0), pady=4)
+        tk.Label(breadcrumb, text="MISC / HCIEMU / WORKBENCH", bg=BG,
+                 fg=TEXT_MUTED, font=("Segoe UI", 8)).pack(side=tk.RIGHT, padx=(0, 12), pady=6)
 
-        page_host = tk.Frame(content, background=BG)
-        page_host.grid(row=1, column=0, sticky="nsew")
+        page_area = tk.Frame(content, background=BG)
+        page_area.grid(row=2, column=0, sticky="nsew")
+        page_area.columnconfigure(0, weight=1)
+        page_area.rowconfigure(0, weight=1)
+
+        page_canvas = tk.Canvas(
+            page_area,
+            background=BG,
+            highlightthickness=0,
+            borderwidth=0,
+            yscrollincrement=18,
+        )
+        page_canvas.grid(row=0, column=0, sticky="nsew")
+        page_scrollbar = ttk.Scrollbar(page_area, orient=tk.VERTICAL, command=page_canvas.yview)
+        page_scrollbar.grid(row=0, column=1, sticky="ns")
+        page_canvas.configure(yscrollcommand=page_scrollbar.set)
+
+        page_host = tk.Frame(page_canvas, background=BG)
         page_host.columnconfigure(0, weight=1)
         page_host.rowconfigure(0, weight=1)
+        self._page_canvas = page_canvas
+        self._page_canvas_window = page_canvas.create_window((0, 0), window=page_host, anchor="nw")
+        page_host.bind("<Configure>", self._on_page_host_configure)
+        page_canvas.bind("<Configure>", self._on_page_canvas_configure)
 
         page_map = {
             "scan":       ScanPage,
@@ -489,6 +507,11 @@ class HCIEMUGui(tk.Tk):
         state_tab.columnconfigure(1, weight=1)
         panel_notebook.add(state_tab, text="STATE")
 
+        problems_tab = ttk.Frame(panel_notebook, style="Card.TFrame", padding=12)
+        panel_notebook.add(problems_tab, text="PROBLEMS")
+        tk.Label(problems_tab, text="No problems detected in the workbench shell.",
+             bg=CARD_BG, fg=TEXT_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+
         self._make_state_panel_row(state_tab, 0, "Active panel", self._active_panel_var)
         self._make_state_panel_row(state_tab, 1, "Transport", self.transport_var)
         self._make_state_panel_row(state_tab, 2, "Connection", self.connection_status_var)
@@ -497,8 +520,55 @@ class HCIEMUGui(tk.Tk):
         self._make_state_panel_row(state_tab, 5, "Advertising", self.adv_status_var)
         self._make_state_panel_row(state_tab, 6, "Bridge", self.bridge_status_var)
 
+        status_bar = tk.Frame(self, background=ACCENT, height=24)
+        status_bar.grid(row=3, column=0, sticky="ew")
+        status_bar.grid_propagate(False)
+        status_bar.columnconfigure(0, weight=1)
+        tk.Label(status_bar, textvariable=self._status_left_var, bg=ACCENT, fg="#ffffff",
+                 font=("Segoe UI", 9), padx=10).grid(row=0, column=0, sticky="w")
+        tk.Label(status_bar, textvariable=self._status_right_var, bg=ACCENT, fg="#ffffff",
+                 font=("Segoe UI", 9), padx=10).grid(row=0, column=1, sticky="e")
+
+        self.bind_all("<MouseWheel>", self._on_global_mousewheel, add="+")
+        self.bind_all("<Button-4>", self._on_global_mousewheel, add="+")
+        self.bind_all("<Button-5>", self._on_global_mousewheel, add="+")
+
         # Show the first page
         self._show_page("scan")
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self)
+        menu_spec = {
+            "File": ["New Session", "Open Config", "Exit"],
+            "Edit": ["Copy Transport", "Clear Output"],
+            "Selection": ["Scan Page", "GATT Page", "Security Page"],
+            "View": ["Explorer", "Output", "State"],
+            "Go": ["Scan", "GATT Explorer", "Settings"],
+            "Run": ["Start Backend", "Stop Backend"],
+            "Terminal": ["Clear Output"],
+            "Help": ["About HCIEMU"],
+        }
+        for menu_name, items in menu_spec.items():
+            menu = tk.Menu(menubar)
+            for item in items:
+                if item == "Exit":
+                    menu.add_command(label=item, command=self._on_close)
+                elif item == "Start Backend":
+                    menu.add_command(label=item, command=self.start_backend)
+                elif item == "Stop Backend":
+                    menu.add_command(label=item, command=self.stop_backend)
+                elif item == "Clear Output":
+                    menu.add_command(label=item, command=self._clear_log)
+                elif item == "Scan":
+                    menu.add_command(label=item, command=lambda: self._show_page("scan"))
+                elif item == "GATT Explorer":
+                    menu.add_command(label=item, command=lambda: self._show_page("gatt"))
+                elif item == "Settings":
+                    menu.add_command(label=item, command=lambda: self._show_page("settings"))
+                else:
+                    menu.add_command(label=item, command=lambda label=item: self.log(f"Menu: {label}"))
+            menubar.add_cascade(label=menu_name, menu=menu)
+        self.config(menu=menubar)
 
     # â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -511,6 +581,9 @@ class HCIEMUGui(tk.Tk):
             prev_activity = self._activity_buttons.get(self._active_page)
             if prev_activity:
                 prev_activity.configure(bg=SIDEBAR_BG, fg=SIDEBAR_TEXT)
+            prev_tab = self._editor_tabs.get(self._active_page)
+            if prev_tab:
+                prev_tab.configure(bg=CARD_BG, fg=TEXT_MUTED)
 
         self._pages[name].grid()
         self._active_page = name
@@ -520,14 +593,73 @@ class HCIEMUGui(tk.Tk):
         activity_btn = self._activity_buttons.get(name)
         if activity_btn:
             activity_btn.configure(bg=SIDEBAR_SEL, fg=SIDEBAR_SEL_TEXT)
+        editor_tab = self._editor_tabs.get(name)
+        if editor_tab:
+            editor_tab.configure(bg=BG, fg=TEXT)
 
         meta = _PAGE_META[name]
         self._active_panel_var.set(meta["label"])
         self._editor_tab_var.set(meta["label"])
-        self._editor_context_var.set("HCIEMU")
+        self._editor_context_var.set(f"Workbench > {meta['label']}")
+        self._status_left_var.set(f"HCIEMU  |  {meta['label']}")
+        self._status_right_var.set(f"Transport: {self.transport_var.get().strip() or 'Not set'}")
+        self.after_idle(self._refresh_page_scroll)
 
         if name == "security":
             self.refresh_security_bonded_list()
+
+    def _on_page_host_configure(self, _event=None) -> None:
+        if self._page_canvas is None:
+            return
+        self._page_canvas.configure(scrollregion=self._page_canvas.bbox("all"))
+
+    def _on_page_canvas_configure(self, event) -> None:
+        if self._page_canvas is None or self._page_canvas_window is None:
+            return
+        self._page_canvas.itemconfigure(self._page_canvas_window, width=event.width)
+
+    def _on_global_mousewheel(self, event):
+        units = 0
+        if getattr(event, "num", None) == 4:
+            units = -1
+        elif getattr(event, "num", None) == 5:
+            units = 1
+        elif getattr(event, "delta", 0):
+            units = int(-event.delta / 120)
+
+        if units == 0:
+            return
+
+        target = self.winfo_containing(event.x_root, event.y_root)
+        if self._scroll_nearest_widget(target, units):
+            return "break"
+
+    _SCROLLABLE_TYPES = (tk.Text, tk.Listbox, tk.Canvas, ttk.Treeview)
+
+    def _scroll_nearest_widget(self, widget, units: int) -> bool:
+        """Walk up the widget hierarchy and scroll the first known scrollable type."""
+        current = widget
+        while current is not None:
+            if isinstance(current, self._SCROLLABLE_TYPES):
+                try:
+                    current.yview_scroll(units, "units")
+                    return True
+                except Exception:
+                    pass
+            current = getattr(current, "master", None)
+
+        # Fallback: scroll the main center page canvas
+        if self._page_canvas is not None:
+            self._page_canvas.yview_scroll(units, "units")
+            return True
+        return False
+
+    def _refresh_page_scroll(self) -> None:
+        if self._page_canvas is None:
+            return
+        self.update_idletasks()
+        self._page_canvas.configure(scrollregion=self._page_canvas.bbox("all"))
+        self._page_canvas.yview_moveto(0)
 
     # â”€â”€ Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -655,11 +787,14 @@ class HCIEMUGui(tk.Tk):
     def update_connection_status(self, peer_address: Optional[str]) -> None:
         """Update sidebar connection status text and color."""
         if peer_address:
-            self.connection_status_var.set(f"Connected: {peer_address}")
+            self.connection_status_var.set("Connected")
+            self.connection_address_var.set(f"BD_ADDR: {peer_address}")
             if self._conn_status_value_label is not None:
                 self._conn_status_value_label.configure(bg=SUCCESS_DIM, fg=TEXT)
             if self._sidebar_conn_status_label is not None:
                 self._sidebar_conn_status_label.configure(fg=ACCENT)
+            if self._sidebar_conn_address_label is not None:
+                self._sidebar_conn_address_label.configure(fg=TEXT)
             if self._disconnect_btn is not None:
                 self._disconnect_btn.configure(state=tk.NORMAL)
             bonded = False
@@ -671,10 +806,13 @@ class HCIEMUGui(tk.Tk):
             self._set_pair_status(bonded)
         else:
             self.connection_status_var.set("Disconnected")
+            self.connection_address_var.set("BD_ADDR: --")
             if self._conn_status_value_label is not None:
                 self._conn_status_value_label.configure(bg=NEUTRAL, fg=TEXT)
             if self._sidebar_conn_status_label is not None:
-                self._sidebar_conn_status_label.configure(fg=TEXT_MUTED)
+                self._sidebar_conn_status_label.configure(fg=TEXT)
+            if self._sidebar_conn_address_label is not None:
+                self._sidebar_conn_address_label.configure(fg=TEXT_MUTED)
             if self._disconnect_btn is not None:
                 self._disconnect_btn.configure(state=tk.DISABLED)
             self._set_pair_status(False)
@@ -685,18 +823,19 @@ class HCIEMUGui(tk.Tk):
         advertiser = self._pages.get("advertiser")
         if advertiser is not None and hasattr(advertiser, "_set_state"):
             advertiser._set_state(running)
-        self.adv_status_var.set("ADV On" if running else "ADV Off")
+        self.adv_status_var.set("Advertising: Running" if running else "Advertising: Stopped")
 
     def _on_adv_status_var_changed(self, *_args) -> None:
         if self._adv_status_label is None:
             return
-        running = self.adv_status_var.get().strip().lower() in {"adv on", "running"}
+        status = self.adv_status_var.get().strip().lower()
+        running = ("running" in status) or ("adv on" in status)
         self._adv_status_label.configure(bg=SUCCESS_DIM if running else DANGER_DIM)
 
     def _on_bridge_status_var_changed(self, *_args) -> None:
         if self._bridge_status_label is None:
             return
-        running = self.bridge_status_var.get().strip().lower() == "running"
+        running = "running" in self.bridge_status_var.get().strip().lower()
         self._bridge_status_label.configure(bg=SUCCESS_DIM if running else DANGER_DIM)
 
     def _set_pair_status(self, paired: bool) -> None:
@@ -788,7 +927,7 @@ class HCIEMUGui(tk.Tk):
         self.backend.stop()
         self.backend = None
         self.update_connection_status(None)
-        self.adv_status_var.set("ADV Off")
+        self.adv_status_var.set("Advertising: Stopped")
         self._update_backend_toggle_visual()
         self.log("Backend stopped")
 
@@ -828,6 +967,14 @@ class HCIEMUGui(tk.Tk):
 def run_gui() -> None:
     """Launch the desktop GUI."""
     app = HCIEMUGui()
+    # Set window icon from embedded resources (works both frozen and source)
+    try:
+        from hciemu.paths import get_resource_dir
+        icon_path = get_resource_dir() / "icon.ico"
+        if icon_path.exists():
+            app.iconbitmap(str(icon_path))
+    except Exception:
+        pass
     app.mainloop()
 
 

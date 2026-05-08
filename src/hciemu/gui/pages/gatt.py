@@ -33,6 +33,7 @@ class GATTPage(BasePage):
         self._notebook: Optional[ttk.Notebook] = None
         self._read_tab = None
         self._write_tab = None
+        self._last_tree_click: Optional[tuple[int, str, str]] = None
         self._build()
 
     def _build(self) -> None:
@@ -144,6 +145,7 @@ class GATTPage(BasePage):
         self._services_tree.grid(row=0, column=0, sticky="nsew")
         self._services_tree.bind("<<TreeviewSelect>>", self._on_service_selected)
         self._services_tree.bind("<Double-Button-1>", lambda _e: self._read_selected_from_services())
+        self._bind_tree_copy(self._services_tree)
 
         vsb = ttk.Scrollbar(table_card, orient=tk.VERTICAL, command=self._services_tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -196,7 +198,7 @@ class GATTPage(BasePage):
             history_card,
             columns=cols,
             show="tree headings",
-            selectmode="browse",
+            selectmode="extended",
             style="Treeview",
         )
         self._read_history_tree.heading("#0", text="Packet")
@@ -218,6 +220,7 @@ class GATTPage(BasePage):
         hsb = ttk.Scrollbar(history_card, orient=tk.HORIZONTAL, command=self._read_history_tree.xview)
         hsb.grid(row=1, column=0, sticky="ew")
         self._read_history_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._bind_tree_copy(self._read_history_tree)
 
     def _build_write_tab(self, parent) -> None:
         parent.columnconfigure(0, weight=1)
@@ -301,7 +304,7 @@ class GATTPage(BasePage):
             packets_card,
             columns=cols,
             show="tree headings",
-            selectmode="browse",
+            selectmode="extended",
             style="Treeview",
         )
         self._packet_history_tree.heading("#0", text="Packet")
@@ -325,6 +328,114 @@ class GATTPage(BasePage):
         hsb = ttk.Scrollbar(packets_card, orient=tk.HORIZONTAL, command=self._packet_history_tree.xview)
         hsb.grid(row=1, column=0, sticky="ew")
         self._packet_history_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._bind_tree_copy(self._packet_history_tree)
+
+    def _bind_tree_copy(self, tree: ttk.Treeview) -> None:
+        tree.bind("<Button-1>", lambda event, t=tree: self._on_tree_click(t, event), add="+")
+        tree.bind("<Button-3>", lambda event, t=tree: self._show_tree_context_menu(t, event), add="+")
+        tree.bind("<Control-c>", lambda event, t=tree: self._copy_tree_selection(t, event), add="+")
+        tree.bind("<Control-C>", lambda event, t=tree: self._copy_tree_selection(t, event), add="+")
+
+    def _on_tree_click(self, tree: ttk.Treeview, event) -> None:
+        row = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if row:
+            self._last_tree_click = (id(tree), row, col)
+
+    def _show_tree_context_menu(self, tree: ttk.Treeview, event):
+        row = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if row:
+            tree.selection_set(row)
+            tree.focus(row)
+            self._last_tree_click = (id(tree), row, col)
+
+        menu = tk.Menu(tree, tearoff=0)
+        menu.add_command(label="Copy Cell", command=lambda t=tree: self._copy_tree_cell_from_last_click(t))
+        menu.add_command(label="Copy Row", command=lambda t=tree: self._copy_tree_row_from_focus(t))
+        menu.add_command(label="Copy Selected Rows", command=lambda t=tree: self._copy_tree_selection(t))
+        menu.tk_popup(event.x_root, event.y_root)
+        menu.grab_release()
+
+    @staticmethod
+    def _tree_cell_text(tree: ttk.Treeview, row: str, col: str) -> str:
+        item = tree.item(row)
+        if col == "#0":
+            return str(item.get("text") or "")
+
+        if not col.startswith("#"):
+            return ""
+        try:
+            index = int(col[1:]) - 1
+        except ValueError:
+            return ""
+
+        values = item.get("values", ())
+        if 0 <= index < len(values):
+            return str(values[index])
+        return ""
+
+    def _copy_text_to_clipboard(self, text: str) -> None:
+        if not text:
+            return
+        self.gui.clipboard_clear()
+        self.gui.clipboard_append(text)
+        self.gui.update_idletasks()
+
+    def _copy_tree_cell_from_last_click(self, tree: ttk.Treeview) -> bool:
+        if self._last_tree_click is None:
+            return False
+        tree_id, row, col = self._last_tree_click
+        if tree_id != id(tree):
+            return False
+        text = self._tree_cell_text(tree, row, col).strip()
+        if not text:
+            return False
+        self._copy_text_to_clipboard(text)
+        return True
+
+    def _copy_tree_row_from_focus(self, tree: ttk.Treeview) -> bool:
+        focused = tree.focus()
+        if not focused:
+            return False
+        item = tree.item(focused)
+        row_parts = []
+        text = str(item.get("text") or "").strip()
+        if text:
+            row_parts.append(text)
+        row_parts.extend(str(value) for value in item.get("values", ()))
+        payload = "\t".join(row_parts).strip()
+        if not payload:
+            return False
+        self._copy_text_to_clipboard(payload)
+        return True
+
+    def _copy_tree_selection(self, tree: ttk.Treeview, _event=None):
+        if self._copy_tree_cell_from_last_click(tree):
+            return "break"
+
+        selected = list(tree.selection())
+        if not selected:
+            focused = tree.focus()
+            if focused:
+                selected = [focused]
+        if not selected:
+            return "break"
+
+        lines: List[str] = []
+        for iid in selected:
+            item = tree.item(iid)
+            row_parts = []
+            text = str(item.get("text") or "").strip()
+            if text:
+                row_parts.append(text)
+            row_parts.extend(str(value) for value in item.get("values", ()))
+            lines.append("\t".join(row_parts).rstrip())
+
+        text_payload = "\n".join(lines).strip()
+        if text_payload:
+            self._copy_text_to_clipboard(text_payload)
+        return "break"
 
     def discover_services(self) -> None:
         if not self._ensure_backend():
@@ -611,20 +722,36 @@ class GATTPage(BasePage):
         uuid = payload.get("uuid") or "-"
         service_uuid = payload.get("service_uuid") or "-"
         preview = hex_value[:48] + ("..." if len(hex_value) > 48 else "")
+        has_type_column = "type" in tuple(tree["columns"])
+
+        if has_type_column:
+            parent_values = (packet_type, handle_text, description, str(length), preview or "expand for packet details")
+            uuid_values = ("", "UUID", uuid, "", uuid)
+            service_values = ("", "Service", service_uuid, "", service_uuid)
+            hex_values = ("", "HEX", "", "", hex_value)
+            ascii_values = ("", "ASCII", "", "", ascii_value)
+            length_values = ("", "Length", "", "", str(length))
+        else:
+            parent_values = (handle_text, description, str(length), preview or "expand for packet details")
+            uuid_values = ("", "UUID", "", uuid)
+            service_values = ("", "Service", "", service_uuid)
+            hex_values = ("", "HEX", "", hex_value)
+            ascii_values = ("", "ASCII", "", ascii_value)
+            length_values = ("", "Length", "", str(length))
 
         parent = tree.insert(
             "",
             tk.END,
             text=label,
-            values=(packet_type, handle_text, description, str(length), preview or "expand for packet details"),
+            values=parent_values,
             tags=("packet",),
             open=False,
         )
-        tree.insert(parent, tk.END, text="", values=("", "UUID", uuid, "", uuid), tags=("detail",))
-        tree.insert(parent, tk.END, text="", values=("", "Service", service_uuid, "", service_uuid), tags=("detail",))
-        tree.insert(parent, tk.END, text="", values=("", "HEX", "", "", hex_value), tags=("detail",))
-        tree.insert(parent, tk.END, text="", values=("", "ASCII", "", "", ascii_value), tags=("detail",))
-        tree.insert(parent, tk.END, text="", values=("", "Length", "", "", str(length)), tags=("detail",))
+        tree.insert(parent, tk.END, text="", values=uuid_values, tags=("detail",))
+        tree.insert(parent, tk.END, text="", values=service_values, tags=("detail",))
+        tree.insert(parent, tk.END, text="", values=hex_values, tags=("detail",))
+        tree.insert(parent, tk.END, text="", values=ascii_values, tags=("detail",))
+        tree.insert(parent, tk.END, text="", values=length_values, tags=("detail",))
         tree.see(parent)
         tree.selection_set(parent)
         tree.focus(parent)

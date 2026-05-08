@@ -1,10 +1,11 @@
-"""Bridge page — manages the bumble-hci-bridge subprocess."""
+"""Bridge page — runs the bumble HCI bridge in-process."""
 from __future__ import annotations
 
-import os
+import asyncio
+import io
 import queue
 import re
-import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -19,7 +20,87 @@ from hciemu.gui.theme import (
 if TYPE_CHECKING:
     from hciemu.gui.main import HCIEMUGui
 
-# ANSI colour codes → hex
+
+# ── In-process bridge ────────────────────────────────────────────────────────
+
+class _StreamToQueue(io.TextIOBase):
+    """Forwards written text line-by-line to a queue."""
+
+    def __init__(self, q: "queue.Queue[str]"):
+        self._q = q
+        self._buf = ""
+
+    def write(self, s: str) -> int:  # type: ignore[override]
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._q.put(line)
+        return len(s)
+
+    def flush(self) -> None:
+        if self._buf:
+            self._q.put(self._buf)
+            self._buf = ""
+
+
+class _InProcessBridge:
+    """Runs bumble HCI bridge inside a daemon thread with its own asyncio loop."""
+
+    def __init__(self, source: str, target: str, out_queue: "queue.Queue[str]"):
+        self._source = source
+        self._target = target
+        self._q = out_queue
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="hci-bridge-loop"
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        loop = self._loop
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(self._cancel_all)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _cancel_all(self) -> None:
+        loop = self._loop
+        if loop:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+    def _run(self) -> None:
+        from bumble.apps.hci_bridge import async_main  # type: ignore
+        writer = _StreamToQueue(self._q)
+        saved_out, saved_err = sys.stdout, sys.stderr
+        saved_argv = sys.argv[:]
+        sys.stdout = writer  # type: ignore[assignment]
+        sys.stderr = writer  # type: ignore[assignment]
+        sys.argv = ["hci_bridge", self._source, self._target]
+        try:
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(async_main())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self._q.put(f"[Bridge error] {exc}")
+        finally:
+            sys.stdout = saved_out
+            sys.stderr = saved_err
+            sys.argv = saved_argv
+            loop = self._loop
+            if loop and not loop.is_closed():
+                loop.close()
+            self._loop = None
+
+
+# ── ANSI colour codes → hex ───────────────────────────────────────────────────
 _ANSI_COLORS = {
     30: "#c0c0c0", 31: "#d32f2f", 32: "#2e7d32", 33: "#f9a825",
     34: "#5c8ee0", 35: "#8e24aa", 36: "#00838f", 37: "#e0e0e0",
@@ -33,9 +114,8 @@ class BridgePage(BasePage):
     def __init__(self, parent, gui: "HCIEMUGui"):
         super().__init__(parent, gui)
 
-        self.bridge_process: Optional[subprocess.Popen] = None
+        self._inproc: Optional[_InProcessBridge] = None
         self._output_queue: queue.Queue[str] = queue.Queue()
-        self._reader_thread: Optional[threading.Thread] = None
         self._poll_job: Optional[str] = None
         self.bridge_window: Optional[tk.Toplevel] = None
         self.bridge_detached = False
@@ -107,71 +187,31 @@ class BridgePage(BasePage):
     # ── Bridge process ────────────────────────────────────────────────────
 
     def start_bridge(self) -> None:
-        if self.bridge_process and self.bridge_process.poll() is None:
+        if self._inproc is not None and self._inproc.is_alive():
             messagebox.showinfo("Bridge running", "Bridge is already running.")
             return
         source = self.gui.bridge_source_var.get().strip() or "usb:0"
         target = self.gui.bridge_target_var.get().strip() or "tcp-server:127.0.0.1:9001"
-        cmd = ["bumble-hci-bridge", source, target]
         try:
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            self.bridge_process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                bufsize=1, env=env,
-            )
-            self.gui.bridge_status_var.set("Running")
+            self._inproc = _InProcessBridge(source, target, self._output_queue)
+            self._inproc.start()
+            self.gui.bridge_status_var.set("Bridge: Running")
             self._update_status_color()
-            self.bridge_log(f"Bridge started: {' '.join(cmd)}")
-            self._reader_thread = threading.Thread(
-                target=self._read_output, daemon=True)
-            self._reader_thread.start()
+            self.bridge_log(f"Bridge started: {source}  →  {target}")
             if self._poll_job is None:
                 self._poll_output()
-        except FileNotFoundError:
-            self.bridge_process = None
-            self.gui.bridge_status_var.set("Stopped")
-            messagebox.showerror("Bridge error",
-                                  "'bumble-hci-bridge' not found in PATH.")
         except Exception as exc:
-            self.bridge_process = None
-            self.gui.bridge_status_var.set("Stopped")
+            self._inproc = None
+            self.gui.bridge_status_var.set("Bridge: Stopped")
             messagebox.showerror("Bridge error", str(exc))
 
     def stop_bridge(self) -> None:
-        p = self.bridge_process
-        if p is None:
-            self.gui.bridge_status_var.set("Stopped")
-            return
-        if p.poll() is None:
-            try:
-                p.terminate()
-                p.wait(timeout=3)
-            except Exception:
-                try:
-                    p.kill()
-                except Exception:
-                    pass
-        self.gui.bridge_status_var.set("Stopped")
+        if self._inproc is not None:
+            self._inproc.stop()
+            self._inproc = None
+        self.gui.bridge_status_var.set("Bridge: Stopped")
         self._update_status_color()
         self.bridge_log("Bridge stopped")
-        self.bridge_process = None
-
-    def _read_output(self) -> None:
-        p = self.bridge_process
-        if p is None or p.stdout is None:
-            return
-        try:
-            while True:
-                line = p.stdout.readline()
-                if line:
-                    self._output_queue.put(line.rstrip("\r\n"))
-                    continue
-                if p.poll() is not None:
-                    break
-        except Exception as exc:
-            self._output_queue.put(f"[Bridge output error] {exc}")
 
     def _poll_output(self) -> None:
         while True:
@@ -179,19 +219,18 @@ class BridgePage(BasePage):
                 self.bridge_log(self._output_queue.get_nowait())
             except queue.Empty:
                 break
-        p = self.bridge_process
-        if p is not None and p.poll() is None:
+        if self._inproc is not None and self._inproc.is_alive():
             self._poll_job = self.gui.after(200, self._poll_output)
             return
-        if p is not None and p.poll() is not None:
-            self.bridge_log(f"Bridge exited with code {p.returncode}")
-            self.gui.bridge_status_var.set("Stopped")
+        if self._inproc is not None:
+            self.bridge_log("Bridge finished")
+            self._inproc = None
+            self.gui.bridge_status_var.set("Bridge: Stopped")
             self._update_status_color()
-            self.bridge_process = None
         self._poll_job = None
 
     def _update_status_color(self) -> None:
-        running = self.gui.bridge_status_var.get() == "Running"
+        running = "running" in self.gui.bridge_status_var.get().strip().lower()
         from hciemu.gui.theme import SUCCESS, DANGER
         try:
             self._status_label.configure(foreground=SUCCESS if running else DANGER)

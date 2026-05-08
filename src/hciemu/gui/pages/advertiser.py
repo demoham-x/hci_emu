@@ -148,7 +148,7 @@ class AdvertiserPage(BasePage):
         ttk.Checkbutton(parent, variable=var).grid(row=row, column=1, sticky="w", pady=4)
 
     def _set_state(self, running: bool) -> None:
-        self.gui.adv_status_var.set("Running" if running else "Stopped")
+        self.gui.adv_status_var.set("Advertising: Running" if running else "Advertising: Stopped")
         if self._status_lbl:
             self._status_lbl.configure(foreground=SUCCESS if running else DANGER)
         if self._start_btn:
