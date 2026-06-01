@@ -150,6 +150,7 @@ class BLEConnector:
         self.service_details = []
         self.interactive = interactive
         self.pairing_delegate = None
+        self._custom_pairing_delegate = None  # For GUI-based delegate injection
         self._smp_config_path = str(get_user_config_path("smp_config.json"))
         
         # SMP Configuration Parameters
@@ -198,6 +199,15 @@ class BLEConnector:
             self._l2cap_event_callback(event_name, channel, payload)
         except Exception as exc:
             logger.debug(f"[L2CAP] event callback error: {exc}")
+
+    def set_pairing_delegate(self, delegate) -> None:
+        """Set a custom pairing delegate to be used during pairing setup.
+        
+        This allows injection of GUI-based or custom pairing delegates.
+        The delegate should be a Bumble PairingDelegate instance.
+        """
+        self._custom_pairing_delegate = delegate
+        logger.info(f"[PAIRING] Custom pairing delegate set: {delegate}")
 
     def _get_l2cap_manager(self):
         if not self.device:
@@ -551,6 +561,26 @@ class BLEConnector:
         except Exception as e:
             logger.debug(f"[CCCD] Failed to persist CCCD preference: {e}")
 
+    def _remove_cccd_preference(self, handle: int) -> None:
+        if not self.connected_device:
+            return
+
+        try:
+            peer_address = str(self.connected_device.peer_address)
+            bonds_data = self._load_bonds_data()
+            peer_entry = self._find_peer_bond_entry(bonds_data, peer_address)
+            if not peer_entry:
+                return
+
+            cccd_map = peer_entry.get(self._cccd_state_key)
+            if not isinstance(cccd_map, dict):
+                return
+
+            if cccd_map.pop(str(handle), None) is not None and self._save_bonds_data(bonds_data):
+                logger.info(f"[CCCD] Cleared persisted subscription for handle 0x{handle:04X} ({handle})")
+        except Exception as e:
+            logger.debug(f"[CCCD] Failed to clear CCCD preference: {e}")
+
     def _get_persisted_cccd_preferences(self) -> Dict[int, str]:
         if not self.connected_device:
             return {}
@@ -734,16 +764,19 @@ class BLEConnector:
         
         logger.info("[PAIRING SETUP] Starting pairing configuration")
         
-        resolved_io_capability = self._resolve_io_capability(self.smp_config['io_capability'])
-
-        # Create pairing delegate wrapper with configured IO capability
-        self.pairing_delegate = GenericPairingDelegate(
-            interactive=self.interactive,
-            io_capability=resolved_io_capability,
-        )
-        delegate = self.pairing_delegate.get_delegate()
-        
-        logger.info(f"[PAIRING SETUP] Created delegate: {delegate}")
+        # Use custom delegate if set, otherwise create default GenericPairingDelegate
+        if self._custom_pairing_delegate is not None:
+            logger.info("[PAIRING SETUP] Using custom pairing delegate")
+            delegate = self._custom_pairing_delegate
+        else:
+            resolved_io_capability = self._resolve_io_capability(self.smp_config['io_capability'])
+            # Create pairing delegate wrapper with configured IO capability
+            self.pairing_delegate = GenericPairingDelegate(
+                interactive=self.interactive,
+                io_capability=resolved_io_capability,
+            )
+            delegate = self.pairing_delegate.get_delegate()
+            logger.info(f"[PAIRING SETUP] Created default delegate: {delegate}")
         
         # Configure pairing factory for device
         def pairing_config_factory(connection):
@@ -1145,7 +1178,6 @@ class BLEConnector:
                     if not bonds_data[local_addr]:
                         del bonds_data[local_addr]
                         logger.info(f"Removed empty local address entry: {local_addr}")
-                    break
             
             if deleted:
                 # Save updated bonds data
@@ -1407,6 +1439,18 @@ class BLEConnector:
                 return details
         return None
 
+    def get_characteristic_details_by_handle(self, handle: int) -> Optional[Dict[str, Any]]:
+        """Return discovered characteristic metadata by handle."""
+        for service in self.service_details:
+            service_uuid = str(service.get("uuid", ""))
+            for characteristic in service.get("characteristics", []):
+                if characteristic.get("handle") != handle:
+                    continue
+                details = dict(characteristic)
+                details["service_uuid"] = service_uuid
+                return details
+        return None
+
     def get_characteristic_handle_by_uuid(self, uuid_str: str) -> Optional[int]:
         """Return discovered handle for a characteristic UUID."""
         details = self.get_characteristic_details_by_uuid(uuid_str)
@@ -1569,6 +1613,32 @@ class BLEConnector:
             return False
         except Exception as e:
             logger.error(f"Subscribe failed: {e}")
+            return False
+
+    async def unsubscribe(self, handle: int) -> bool:
+        """Unsubscribe from notifications or indications on a characteristic."""
+        if not self.connected_device:
+            logger.error("No device connected")
+            return False
+
+        if not self.gatt_client:
+            logger.error("No GATT client available")
+            return False
+
+        try:
+            logger.info(f"Unsubscribing from handle 0x{handle:04X} ({handle})...")
+
+            if handle not in self.characteristics:
+                logger.error(f"Handle 0x{handle:04X} ({handle}) not found in discovered characteristics")
+                return False
+
+            char_proxy = self.characteristics[handle]
+            await self.gatt_client.unsubscribe(char_proxy, force=True)
+            self._remove_cccd_preference(handle)
+            logger.info("Unsubscribe successful")
+            return True
+        except Exception as e:
+            logger.error(f"Unsubscribe failed: {e}")
             return False
 
     async def _burst_write_sender(
