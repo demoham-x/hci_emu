@@ -13,6 +13,7 @@ import sys
 from typing import Any, Dict, Optional, List, Callable
 import os
 from bumble.hci import Role
+from hciemu.ai_diagnostics import ai_diagnostic_wrapper
 
 try:
     from rich.table import Table
@@ -410,6 +411,7 @@ class BLETestingApp:
 
             connection.on(event_name, on_event)
 
+    @ai_diagnostic_wrapper("LE Security Manager Pairing Lifecycle")
     def _on_pairing_start(self, *args):
         """Handle LE pairing_start event."""
         self._pairing_in_progress = True
@@ -442,6 +444,7 @@ class BLETestingApp:
         logger.info(f"[PAIRING EVENT] pairing: {args!r}")
         self._emit_status("[PAIRING] Completed")
 
+    @ai_diagnostic_wrapper("LE Security Manager Pairing Lifecycle")
     def _on_pairing_failure(self, *args):
         """Handle LE pairing failure event."""
         self._pairing_in_progress = False

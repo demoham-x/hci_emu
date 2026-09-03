@@ -17,6 +17,37 @@ import sys
 import subprocess
 
 from hciemu.menu import BLETestingMenu
+# Import your diagnostic engine
+from hciemu.ai_diagnostics import get_ai_fix 
+
+
+def global_async_error_handler(loop, context):
+    """
+    Global interceptor for any unhandled exception that happens
+    inside background tasks or async loops.
+    """
+    exception = context.get('exception')
+    
+    if exception:
+        print("\n" + "!" * 60)
+        print("[!] Background Async Crash Detected. Calling Cloud AI Engine...")
+        print("!" * 60 + "\n")
+        
+        # Build immediate execution context for Gemini
+        app_context = {
+            "async_message": context.get('message'),
+            "failed_future": str(context.get('future')),
+            "failed_handle": str(context.get('handle'))
+        }
+        
+        # Pull suggestions from Gemini
+        ai_suggestion = get_ai_fix(exception, app_context)
+        
+        print("\n" + "=" * 60)
+        print(ai_suggestion)
+        print("=" * 60 + "\n")
+    else:
+        print(f"\n[!] Async loop issue: {context.get('message')}\n")
 
 
 async def main() -> None:
@@ -36,8 +67,26 @@ async def main() -> None:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    menu = BLETestingMenu(args.transport)
-    await menu.run()
+    # 1. Register the global exception hook right as the async app launches
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(global_async_error_handler)
+
+    try:
+        menu = BLETestingMenu(args.transport)
+        await menu.run()
+    except Exception as exc:
+        # 2. Catches errors occurring explicitly on the main menu execution thread
+        print("\n" + "!" * 60)
+        print("[!] Menu Controller Crash Detected. Calling Cloud AI Engine...")
+        print("!" * 60 + "\n")
+        
+        app_context = {"transport_used": args.transport, "layer": "Main Interactive Menu"}
+        ai_suggestion = get_ai_fix(exc, app_context)
+        
+        print("\n" + "=" * 60)
+        print(ai_suggestion)
+        print("=" * 60 + "\n")
+        raise exc
 
 
 def run_cli() -> None:
@@ -48,6 +97,9 @@ def run_cli() -> None:
         print("\n\nExit")
     except asyncio.CancelledError:
         print("\n\nOperation cancelled")
+    except Exception as exc:
+        # 3. Last line of defense if something goes wrong outside the async environment
+        print(f"\n[!] Critical System Crash: {exc}")
 
 
 def run_bridge_cli() -> None:
